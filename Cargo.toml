@@ -1,0 +1,7 @@
+[package]
+name = "sorcery"
+version = "0.1.0"
+authors = ["conner bryan <conner@amps.io>"]
+edition = "2018"
+
+[dependencies]
