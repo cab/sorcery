@@ -1,0 +1,11 @@
+[package]
+name = "sorcery"
+version = "0.1.0"
+authors = ["conner bryan <conner@amps.io>"]
+description = "ui components"
+license = "MIT"
+edition = "2018"
+
+[dependencies]
+thiserror = "^1.0"
+sorcery-codegen = { path = "../sorcery-codegen" }

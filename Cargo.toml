@@ -1,9 +1,2 @@
-[package]
-name = "sorcery"
-version = "0.1.0"
-authors = ["conner bryan <conner@amps.io>"]
-description = "ui components"
-license = "MIT"
-edition = "2018"
-
-[dependencies]
+[workspace]
+members = ["sorcery", "sorcery-codegen"]
