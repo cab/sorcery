@@ -7,7 +7,10 @@ use std::{
 };
 
 #[derive(thiserror::Error, Debug)]
-pub enum Error {}
+pub enum Error {
+    #[error("invalid props")]
+    InvalidProps,
+}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -23,29 +26,52 @@ where
     }
 }
 
-struct AnyComponent<T, C>(C, std::marker::PhantomData<T>);
+struct AnyComponent<T, P, C>(C, std::marker::PhantomData<T>, std::marker::PhantomData<P>);
 
-impl<T, C> AnyComponent<T, C>
+impl<T, P, C> AnyComponent<T, P, C>
 where
-    C: Component<T>,
+    C: Component<T, Props = P>,
     T: RenderPrimitive,
 {
     fn new(component: C) -> Self {
-        Self(component, std::marker::PhantomData)
+        Self(
+            component,
+            std::marker::PhantomData,
+            std::marker::PhantomData,
+        )
     }
 }
 
-trait PropCast {
-    fn get(&self) -> &dyn Any;
+trait PropCast<T>
+where
+    T: RenderPrimitive,
+{
+    fn render(
+        &self,
+        context: &mut ComponentContext,
+        props: &dyn Any,
+        children: Vec<Element<T>>,
+    ) -> Result<Element<T>>;
 }
 
-impl<T, C: Component<T>> PropCast for AnyComponent<T, C>
+impl<T, P, C> PropCast<T> for AnyComponent<T, P, C>
 where
+    C: Component<T, Props = P>,
     C: 'static,
+    P: 'static,
     T: RenderPrimitive + 'static,
 {
-    fn get(&self) -> &dyn Any {
-        &self.0
+    fn render(
+        &self,
+        context: &mut ComponentContext,
+        props: &dyn Any,
+        children: Vec<Element<T>>,
+    ) -> Result<Element<T>> {
+        if let Some(props) = props.downcast_ref() {
+            self.0.render(context, props, children)
+        } else {
+            Err(Error::InvalidProps)
+        }
     }
 }
 
@@ -54,7 +80,7 @@ where
     T: RenderPrimitive,
 {
     key: Option<Key>,
-    constructor: Box<dyn Fn(Box<dyn Any>) -> Box<dyn PropCast>>,
+    constructor: Box<dyn Fn(&dyn Any) -> Box<dyn PropCast<T>>>,
     props: Box<dyn Any>,
     children: Vec<Element<T>>,
 }
@@ -99,10 +125,9 @@ where
         C: Component<T> + 'static,
         T: 'static,
     {
-        let constructor = |props: Box<dyn Any>| {
-            Box::new(AnyComponent::new(C::new(
-                Any::downcast_ref(&props).unwrap(),
-            ))) as Box<dyn PropCast>
+        let constructor = |props: &dyn Any| {
+            Box::new(AnyComponent::new(C::new(Any::downcast_ref(props).unwrap())))
+                as Box<dyn PropCast<T>>
             // as Box<dyn Component<T, Props = C::Props>>
         };
         Element::Component(ComponentElement {

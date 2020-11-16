@@ -27,6 +27,24 @@ where
     pub fn create_container(&mut self, base: R::Container) -> R::Container {
         base
     }
+
+    fn render_tree(&mut self, element: &Element<P>) -> R::Instance {
+        match element {
+            Element::Component(ComponentElement {
+                constructor, props, ..
+            }) => {
+                let c = constructor(&props);
+                let mut context = super::Context::new();
+                let mut ccontext = context.component();
+                c.render(&mut ccontext, props, vec![]);
+                unimplemented!();
+            }
+            Element::Native(NativeElement { .. }) => {
+                unimplemented!();
+            }
+        }
+    }
+
     pub fn update_container(&mut self, container: &mut R::Container, element: &Element<P>) {
         // let mut instance = self.renderer.create_instance(element);
         // self.renderer
