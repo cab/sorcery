@@ -47,7 +47,7 @@ where
     T: RenderPrimitive,
 {
     key: Option<Key>,
-    constructor: fn(&dyn StoredProps) -> Box<dyn AnyComponent<T>>,
+    constructor: fn(&dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>,
     props: Box<dyn StoredProps>,
     children: Vec<Element<T>>,
 }
@@ -134,7 +134,7 @@ trait AnyComponent<T>
 where
     T: RenderPrimitive,
 {
-    fn new(props: &dyn StoredProps) -> Box<dyn AnyComponent<T>>
+    fn new(props: &dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>
     where
         Self: Sized;
     fn render(
@@ -167,12 +167,12 @@ where
     P: 'static,
     T: RenderPrimitive,
 {
-    fn new(props: &dyn StoredProps) -> Box<dyn AnyComponent<T>>
+    fn new(props: &dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>
     where
         Self: Sized,
     {
-        let props = props.any().downcast_ref::<P>().unwrap();
-        Box::new(C::new(props)) as Box<dyn AnyComponent<T>>
+        let props = props.any().downcast_ref::<P>().ok_or(Error::InvalidProps)?;
+        Ok(Box::new(C::new(props)) as Box<dyn AnyComponent<T>>)
     }
 
     fn render(
@@ -181,8 +181,8 @@ where
         props: &dyn StoredProps,
         children: Vec<Element<T>>,
     ) -> Result<Element<T>> {
-        let props = props.any().downcast_ref::<P>().unwrap();
-        C::render(self, context, Any::downcast_ref(props).unwrap(), children)
+        let props = props.any().downcast_ref::<P>().ok_or(Error::InvalidProps)?;
+        C::render(self, context, props, children)
     }
 }
 
