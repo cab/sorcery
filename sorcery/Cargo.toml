@@ -9,4 +9,4 @@ edition = "2018"
 [dependencies]
 thiserror = "^1.0"
 sorcery-codegen = { path = "../sorcery-codegen" }
-dyn-clone = "^1.0"
+# dyn-clone = "^1.0"

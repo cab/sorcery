@@ -1,10 +1,10 @@
 mod reconciler;
-use dyn_clone::DynClone;
 pub use reconciler::Renderer;
 pub use sorcery_codegen::component;
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
+    fmt::{self, Debug},
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -27,7 +27,7 @@ where
     }
 }
 
-pub trait StoredProps: Any + DynClone + std::fmt::Debug {
+pub trait StoredProps: Any + std::fmt::Debug {
     fn any(&self) -> &(dyn Any + '_);
 }
 
@@ -40,21 +40,45 @@ where
     }
 }
 
-dyn_clone::clone_trait_object!(StoredProps);
-
 pub struct ComponentElement<T>
 where
     T: RenderPrimitive,
 {
+    name: Option<String>,
     key: Option<Key>,
     constructor: fn(&dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>,
     props: Box<dyn StoredProps>,
     children: Vec<Element<T>>,
 }
 
-pub struct NativeElement<T>
+impl<T> Debug for ComponentElement<T>
 where
     T: RenderPrimitive,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ComponentElement")
+            .field("name", &self.name.as_deref().unwrap_or_else(|| "?"))
+            .finish()
+    }
+}
+
+impl<T> ComponentElement<T>
+where
+    T: RenderPrimitive,
+{
+    pub(crate) fn construct(&self) -> Result<Box<dyn AnyComponent<T>>> {
+        (self.constructor)(self.props.as_ref())
+    }
+
+    pub(crate) fn props(&self) -> &dyn StoredProps {
+        self.props.as_ref()
+    }
+}
+
+#[derive(Debug)]
+pub struct NativeElement<T>
+where
+    T: RenderPrimitive + std::fmt::Debug,
 {
     key: Option<Key>,
     ty: T,
@@ -62,6 +86,10 @@ where
     children: Vec<Element<T>>,
 }
 
+#[derive(Debug, Hash, PartialOrd, PartialEq, Ord, Eq)]
+pub(crate) struct ElementId(u32);
+
+#[derive(Debug)]
 pub enum Element<T>
 where
     T: RenderPrimitive,
@@ -70,17 +98,8 @@ where
     Native(NativeElement<T>),
 }
 
-impl<T> std::fmt::Debug for Element<T>
-where
-    T: RenderPrimitive,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Element").finish()
-    }
-}
-
-pub trait RenderPrimitive {
-    type Props: Default;
+pub trait RenderPrimitive: std::fmt::Debug {
+    type Props: std::fmt::Debug + Default;
 }
 
 impl<T> Element<T>
@@ -93,8 +112,10 @@ where
         T: 'static,
     {
         let constructor = |props: &dyn StoredProps| <C as AnyComponent<T>>::new(props);
+        let name = std::any::type_name::<C>();
         Element::Component(ComponentElement {
             key,
+            name: Some(name.to_string()),
             constructor: constructor,
             props: Box::new(props),
             children,
