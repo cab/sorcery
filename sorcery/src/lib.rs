@@ -1,4 +1,5 @@
 mod reconciler;
+use dyn_clone::DynClone;
 pub use reconciler::Renderer;
 pub use sorcery_codegen::component;
 use std::{
@@ -27,9 +28,11 @@ where
     }
 }
 
-pub trait StoredProps: Any + std::fmt::Debug {
+pub trait StoredProps: Any + DynClone + std::fmt::Debug {
     fn any(&self) -> &(dyn Any + '_);
 }
+
+dyn_clone::clone_trait_object!(StoredProps);
 
 impl<T> StoredProps for T
 where
@@ -40,6 +43,7 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct ComponentElement<T>
 where
     T: RenderPrimitive,
@@ -75,7 +79,7 @@ where
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NativeElement<T>
 where
     T: RenderPrimitive + std::fmt::Debug,
@@ -89,7 +93,7 @@ where
 #[derive(Debug, Hash, PartialOrd, PartialEq, Ord, Eq)]
 pub(crate) struct ElementId(u32);
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Element<T>
 where
     T: RenderPrimitive,
@@ -98,8 +102,8 @@ where
     Native(NativeElement<T>),
 }
 
-pub trait RenderPrimitive: std::fmt::Debug {
-    type Props: std::fmt::Debug + Default;
+pub trait RenderPrimitive: std::fmt::Debug + Clone {
+    type Props: std::fmt::Debug + Default + Clone;
 }
 
 impl<T> Element<T>

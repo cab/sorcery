@@ -1,5 +1,5 @@
 use crate::{
-    Component, ComponentElement, ComponentId, Element, NativeElement, RenderPrimitive, Result,
+    Component, ComponentElement, ComponentId, Element, Key, NativeElement, RenderPrimitive, Result,
 };
 use std::{
     any::Any,
@@ -13,17 +13,26 @@ where
 {
     instances: HashMap<ComponentId, Box<dyn Any>>,
     element_type: std::marker::PhantomData<P>,
-    state: RenderState<P>,
     renderer: R,
     render_queue: VecDeque<Element<P>>,
 }
 
-enum RenderState<T>
+#[derive(Debug)]
+enum RenderNodeElement<'r, T>
 where
     T: RenderPrimitive,
 {
-    None,
-    Element(Element<T>),
+    Native { element: &'r NativeElement<T> },
+    Component { element: &'r ComponentElement<T> },
+}
+
+#[derive(Debug)]
+struct RenderNode<'r, T>
+where
+    T: RenderPrimitive,
+{
+    element: RenderNodeElement<'r, T>,
+    dependencies: Vec<RenderNode<'r, T>>,
 }
 
 impl<P, R> Reconciler<P, R>
@@ -34,7 +43,6 @@ where
     pub fn new(renderer: R) -> Self {
         Self {
             renderer,
-            state: RenderState::None,
             render_queue: VecDeque::new(),
             instances: HashMap::new(),
             element_type: std::marker::PhantomData,
@@ -45,34 +53,54 @@ where
         base
     }
 
-    fn render_tree(&mut self, element: &Element<P>) -> Result<R::Instance> {
+    fn build_tree<'r>(&mut self, element: &'r Element<P>) -> Result<RenderNode<'r, P>> {
         println!("rendering a {:?}", element);
         match element {
-            Element::Component(element) => {
-                let c = element.construct()?;
-                let mut context = super::Context::new();
-                let mut ccontext = context.component();
-                let new_element = c.render(&mut ccontext, element.props(), vec![])?;
-                let children = element
+            Element::Component(comp) => {
+                // let c = element.construct()?;
+                // let mut context = super::Context::new();
+                // let mut ccontext = context.component();
+                // let new_element = c.render(&mut ccontext, element.props(), vec![])?;
+                let children = comp
                     .children
                     .iter()
-                    .map(|child| self.render_tree(child))
+                    .map(|child| self.build_tree(child))
                     .collect::<Result<Vec<_>>>()?;
-                self.render_queue.push_back(element);
-                let rendered = self.render_tree(&new_element)?;
-                Ok(rendered)
+                // let rendered = self.render_tree(&new_element)?;
+                Ok(RenderNode {
+                    element: RenderNodeElement::Component { element: comp },
+                    dependencies: children,
+                })
             }
-            Element::Native(element) => {
-                let children = element
+            Element::Native(native) => {
+                let children = native
                     .children
                     .iter()
-                    .map(|child| self.render_tree(child))
+                    .map(|child| self.build_tree(child))
                     .collect::<Result<Vec<_>>>()?;
-                let instance = self.renderer.create_instance(element);
-                Ok(instance)
+                Ok(RenderNode {
+                    element: RenderNodeElement::Native { element: native },
+                    dependencies: children,
+                })
             }
         }
     }
+
+    // fn render(&mut self) -> Result<()> {
+    //     for element in &self.render_queue {
+    //         match element {
+    //             Element::Component(comp) => {
+    //                 let c = comp.construct()?;
+    //                 let mut context = super::Context::new();
+    //                 let mut ccontext = context.component();
+    //                 let new_element = c.render(&mut ccontext, comp.props(), vec![])?;
+    //                 self.schedule_render(&new_element);
+    //             }
+    //             Element::Native(native) => {}
+    //         }
+    //     }
+    //     Ok(())
+    // }
 
     fn diff(&self, old_tree: &R::Instance, new_tree: &R::Instance) {}
 
@@ -81,8 +109,9 @@ where
         container: &mut R::Container,
         element: &Element<P>,
     ) -> Result<()> {
-        let tree = self.render_tree(element)?;
-        self.renderer.append_child_to_container(container, tree);
+        let tree = self.build_tree(element)?;
+        println!("nodes {:?}", tree);
+        // self.renderer.append_child_to_container(container, tree);
         Ok(())
     }
 }
@@ -114,7 +143,7 @@ mod test {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     struct Str(String);
 
     #[derive(Debug, Clone)]
@@ -218,7 +247,11 @@ mod test {
             value: "".to_owned(),
             children: vec![],
         });
-        let component = Element::component::<List>(None, (), vec![]);
+        let component = Element::component::<List>(
+            None,
+            (),
+            vec![Element::native(None, Str("hello".to_string()), (), vec![])],
+        );
         reconciler
             .update_container(&mut container, &component)
             .unwrap();
