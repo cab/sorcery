@@ -140,7 +140,7 @@ impl Config {
               impl sorcery::Component<#element_type> for #name {
                   type Props = #prop_type;
 
-                  fn new(props: &Self::Props) -> Self {
+                  fn new(id: sorcery::ComponentId, props: &Self::Props) -> Self {
                     Self {}
                   }
 
@@ -155,43 +155,7 @@ impl Config {
               }
             }
         } else if let Some(generic) = self.element_generic.as_ref() {
-            quote! {
-              fn #fn_name <#generic>(
-                context: &mut sorcery::ComponentContext,
-                props: &<#name as sorcery::Component<TestElement>>::Props,
-                children: Vec<sorcery::Element<#generic>>,
-              ) -> sorcery::Result<sorcery::Element<#generic>> {
-                  #name::create_element(props, children)
-              }
-
-              fn #fn_name_with_key <#generic>(
-                  context: &mut sorcery::ComponentContext,
-                  key: impl Into<sorcery::Key>,
-                  props: &<#name as Component<TestElement>>::Props,
-                  children: Vec<sorcery::Element<#generic>>,
-              ) -> sorcery::Result<sorcery::Element<#generic>> {
-                  #name::create_element_with_key(key, props, children)
-              }
-
-              struct #name {}
-
-              impl <#generic> sorcery::Component<#generic> for #name {
-                  type Props = #prop_type;
-
-                  fn new(props: &Self::Props) -> Self {
-                      Self {}
-                  }
-
-                  fn render(
-                      &self,
-                      context: &mut sorcery::ComponentContext,
-                      props: &Self::Props,
-                      _: Vec<sorcery::Element<#generic>>,
-                  ) -> Result<sorcery::Element<#generic>> {
-                      (#render).map(|i| i.into())
-                  }
-              }
-            }
+            panic!("todo?");
         } else {
             panic!("must have a generic parameter <E> or specify element type");
         };
