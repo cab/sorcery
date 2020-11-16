@@ -1,4 +1,5 @@
 mod reconciler;
+use dyn_clone::DynClone;
 pub use reconciler::Renderer;
 pub use sorcery_codegen::component;
 use std::{
@@ -26,62 +27,28 @@ where
     }
 }
 
-struct AnyComponent<T, P, C>(C, std::marker::PhantomData<T>, std::marker::PhantomData<P>);
+pub trait StoredProps: Any + DynClone + std::fmt::Debug {
+    fn any(&self) -> &(dyn Any + '_);
+}
 
-impl<T, P, C> AnyComponent<T, P, C>
+impl<T> StoredProps for T
 where
-    C: Component<T, Props = P>,
-    T: RenderPrimitive,
+    T: Any + Clone + std::fmt::Debug,
 {
-    fn new(component: C) -> Self {
-        Self(
-            component,
-            std::marker::PhantomData,
-            std::marker::PhantomData,
-        )
+    fn any(&self) -> &dyn Any {
+        self
     }
 }
 
-trait PropCast<T>
-where
-    T: RenderPrimitive,
-{
-    fn render(
-        &self,
-        context: &mut ComponentContext,
-        props: &dyn Any,
-        children: Vec<Element<T>>,
-    ) -> Result<Element<T>>;
-}
-
-impl<T, P, C> PropCast<T> for AnyComponent<T, P, C>
-where
-    C: Component<T, Props = P>,
-    C: 'static,
-    P: 'static,
-    T: RenderPrimitive + 'static,
-{
-    fn render(
-        &self,
-        context: &mut ComponentContext,
-        props: &dyn Any,
-        children: Vec<Element<T>>,
-    ) -> Result<Element<T>> {
-        if let Some(props) = props.downcast_ref() {
-            self.0.render(context, props, children)
-        } else {
-            Err(Error::InvalidProps)
-        }
-    }
-}
+dyn_clone::clone_trait_object!(StoredProps);
 
 pub struct ComponentElement<T>
 where
     T: RenderPrimitive,
 {
     key: Option<Key>,
-    constructor: Box<dyn Fn(&dyn Any) -> Box<dyn PropCast<T>>>,
-    props: Box<dyn Any>,
+    constructor: fn(&dyn StoredProps) -> Box<dyn AnyComponent<T>>,
+    props: Box<dyn StoredProps>,
     children: Vec<Element<T>>,
 }
 
@@ -125,14 +92,10 @@ where
         C: Component<T> + 'static,
         T: 'static,
     {
-        let constructor = |props: &dyn Any| {
-            Box::new(AnyComponent::new(C::new(Any::downcast_ref(props).unwrap())))
-                as Box<dyn PropCast<T>>
-            // as Box<dyn Component<T, Props = C::Props>>
-        };
+        let constructor = |props: &dyn StoredProps| <C as AnyComponent<T>>::new(props);
         Element::Component(ComponentElement {
             key,
-            constructor: Box::new(constructor),
+            constructor: constructor,
             props: Box::new(props),
             children,
         })
@@ -167,11 +130,26 @@ where
     }
 }
 
+trait AnyComponent<T>
+where
+    T: RenderPrimitive,
+{
+    fn new(props: &dyn StoredProps) -> Box<dyn AnyComponent<T>>
+    where
+        Self: Sized;
+    fn render(
+        &self,
+        context: &mut ComponentContext,
+        props: &dyn StoredProps,
+        children: Vec<Element<T>>,
+    ) -> Result<Element<T>>;
+}
+
 pub trait Component<T>
 where
     T: RenderPrimitive,
 {
-    type Props: Any;
+    type Props: StoredProps;
     fn new(props: &Self::Props) -> Self
     where
         Self: Sized;
@@ -181,6 +159,39 @@ where
         props: &Self::Props,
         children: Vec<Element<T>>,
     ) -> Result<Element<T>>;
+}
+
+impl<C, P, T> AnyComponent<T> for C
+where
+    C: Component<T, Props = P> + 'static,
+    P: 'static,
+    T: RenderPrimitive,
+{
+    fn new(props: &dyn StoredProps) -> Box<dyn AnyComponent<T>>
+    where
+        Self: Sized,
+    {
+        let props = props.any().downcast_ref::<P>().unwrap();
+        Box::new(C::new(props)) as Box<dyn AnyComponent<T>>
+    }
+
+    fn render(
+        &self,
+        context: &mut ComponentContext,
+        props: &dyn StoredProps,
+        children: Vec<Element<T>>,
+    ) -> Result<Element<T>> {
+        let props = props.any().downcast_ref::<P>().unwrap();
+        C::render(self, context, Any::downcast_ref(props).unwrap(), children)
+    }
+}
+
+fn as_any<C, T>(component: C) -> Box<dyn AnyComponent<T>>
+where
+    C: Component<T> + 'static,
+    T: RenderPrimitive,
+{
+    Box::new(component)
 }
 
 #[derive(Debug)]
@@ -293,7 +304,7 @@ mod test {
     };
 
     struct TestElement {}
-    type Element = crate::Element<TestElement>;
+    type Element<'r> = crate::Element<TestElement>;
 
     // struct List2 {}
 

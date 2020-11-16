@@ -28,15 +28,17 @@ where
         base
     }
 
-    fn render_tree(&mut self, element: &Element<P>) -> R::Instance {
+    fn render_tree(&mut self, element: Element<P>) -> R::Instance {
         match element {
             Element::Component(ComponentElement {
                 constructor, props, ..
             }) => {
-                let c = constructor(&props);
+                // let props = dyn_clone::clone_box(&**props);
+                eprintln!("wtf {:?}", props);
+                let c = constructor(props.as_ref());
                 let mut context = super::Context::new();
                 let mut ccontext = context.component();
-                c.render(&mut ccontext, props, vec![]);
+                c.render(&mut ccontext, props.as_ref(), vec![]);
                 unimplemented!();
             }
             Element::Native(NativeElement { .. }) => {
@@ -45,7 +47,8 @@ where
         }
     }
 
-    pub fn update_container(&mut self, container: &mut R::Container, element: &Element<P>) {
+    pub fn update_container<'r>(&mut self, container: &mut R::Container, element: Element<P>) {
+        let tree = self.render_tree(element);
         // let mut instance = self.renderer.create_instance(element);
         // self.renderer
         //     .append_child_to_container(container, &mut instance);
@@ -157,7 +160,7 @@ mod test {
         let mut reconciler = Reconciler::new(renderer);
         let mut container = reconciler.create_container(Str("".to_string()));
         let component = Element::component::<List>(None, (), vec![]);
-        reconciler.update_container(&mut container, &component);
+        reconciler.update_container(&mut container, component);
         assert_eq!("test", &container.0);
     }
 }
