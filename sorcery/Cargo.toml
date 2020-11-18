@@ -10,8 +10,9 @@ edition = "2018"
 thiserror = "^1.0"
 sorcery-codegen = { path = "../sorcery-codegen" }
 dyn-clone = "^1.0"
-indextree = "4.3.1"
+generational-arena = "0.2.8"
 tracing = "0.1"
+crossbeam-channel = "^0.5"
 
 [dev-dependencies]
 tracing-subscriber = {version = "0.1.6", features = ["chrono", "env-filter", "fmt"]}

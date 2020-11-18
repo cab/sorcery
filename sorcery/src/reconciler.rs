@@ -1,5 +1,6 @@
-use indextree::{Arena, NodeId as ArenaNodeId};
-use tracing::{debug, trace};
+use crossbeam_channel as channel;
+use generational_arena::{Arena, Index as ArenaNodeId};
+use tracing::{debug, trace, warn};
 
 use crate::{
     AnyComponent, Component, ComponentElement, ComponentId, Element, Key, NativeElement,
@@ -10,9 +11,9 @@ use std::{
     collections::{HashMap, VecDeque},
 };
 
-pub struct Reconciler<P, R>
+pub struct Reconciler<'r, P, R>
 where
-    R: Renderer<P>,
+    R: Renderer<'r, P>,
     P: RenderPrimitive,
 {
     next_fiber_id: u32,
@@ -41,17 +42,11 @@ where
     P: RenderPrimitive,
 {
     fn parent<'a>(&self, arena: &'a Arena<Self>) -> Option<&'a Self> {
-        self.parent
-            .as_ref()
-            .and_then(|p| arena.get(*p))
-            .map(|n| n.get())
+        self.parent.and_then(|p| arena.get(p))
     }
 
     fn sibling<'a>(&self, arena: &'a Arena<Self>) -> Option<&'a Self> {
-        self.sibling
-            .as_ref()
-            .and_then(|p| arena.get(*p))
-            .map(|n| n.get())
+        self.sibling.and_then(|p| arena.get(p))
     }
 
     fn is_native(&self) -> bool {
@@ -100,13 +95,13 @@ where
 
     fn parent_native_mut<'a>(&self, arena: &'a mut Arena<Self>) -> Option<&'a mut Self> {
         let id = self.parent_native_id(arena)?;
-        arena.get_mut(id).map(|n| n.get_mut())
+        arena.get_mut(id)
     }
 
     fn parent_native_id<'a>(&'a self, arena: &'a Arena<Self>) -> Option<ArenaNodeId> {
         let mut parent = self.parent;
         while let Some(p) = parent {
-            if let Some(node) = arena.get(p).map(|n| n.get()) {
+            if let Some(node) = arena.get(p) {
                 if node.is_native() {
                     return Some(p);
                 }
@@ -240,19 +235,6 @@ where
     }
 }
 
-fn process_ids_wrap<P, R>(
-    mut f: impl FnMut(&ArenaNodeId, &mut Arena<Fiber<P, R>>) -> Result<()>,
-) -> impl FnMut(&ArenaNodeId, &mut Arena<Fiber<P, R>>) -> Result<Option<ArenaNodeId>>
-where
-    P: RenderPrimitive,
-{
-    move |fiber, arena| {
-        f(fiber, arena)?;
-        let child = arena.get(*fiber).and_then(|n| n.get().child);
-        Ok(child)
-    }
-}
-
 fn process_wrap_mut<P, R>(
     mut f: impl FnMut(&mut Fiber<P, R>) -> Result<()>,
 ) -> impl FnMut(&mut Fiber<P, R>) -> Result<Option<ArenaNodeId>>
@@ -268,21 +250,21 @@ where
 fn walk_fibers<P, R>(
     arena: &Arena<Fiber<P, R>>,
     start: ArenaNodeId,
-    mut process: impl FnMut(&Fiber<P, R>) -> Result<Option<ArenaNodeId>>,
+    mut process: impl FnMut(&Fiber<P, R>, &ArenaNodeId) -> Result<Option<ArenaNodeId>>,
 ) -> Result<()>
 where
     P: RenderPrimitive,
 {
-    let start = match arena.get(start) {
-        Some(n) => n.get(),
-        _ => return Ok(()),
-    };
     let root = start;
     let mut current = start;
     loop {
-        let child = process(current)?;
-        if let Some(child) = child.and_then(|c| arena.get(c)) {
-            current = child.get();
+        let child = if let Some(node) = arena.get(current) {
+            process(node, &current)?
+        } else {
+            panic!();
+        };
+        if let Some(child) = child {
+            current = child;
             continue;
         }
 
@@ -290,17 +272,23 @@ where
             return Ok(());
         }
 
-        while current.sibling.is_none() {
-            if current.parent.is_none() || current.parent(arena).map(|p| p == root).unwrap_or(false)
+        loop {
+            let current_node = arena.get(current).unwrap(); // todo
+            if !current_node.sibling.is_none() {
+                break;
+            }
+            if current_node.parent.is_none()
+                || current_node.parent.map(|p| p == root).unwrap_or(false)
             {
                 return Ok(());
             }
-            if let Some(parent) = current.parent(arena) {
+            if let Some(parent) = current_node.parent {
                 current = parent;
             }
         }
+        let current_node = arena.get(current).unwrap(); // todo
 
-        if let Some(sibling) = current.sibling(arena) {
+        if let Some(sibling) = current_node.sibling {
             current = sibling;
         }
     }
@@ -328,7 +316,7 @@ where
         }
 
         loop {
-            let current_node = arena.get(current).map(|n| n.get()).unwrap(); // todo
+            let current_node = arena.get(current).unwrap(); // todo
             if !current_node.sibling.is_none() {
                 break;
             }
@@ -341,7 +329,7 @@ where
                 current = parent;
             }
         }
-        let current_node = arena.get(current).map(|n| n.get()).unwrap(); // todo
+        let current_node = arena.get(current).unwrap(); // todo
 
         if let Some(sibling) = current_node.sibling {
             current = sibling;
@@ -360,7 +348,7 @@ where
     let root = start;
     let mut current = start;
     loop {
-        let child = if let Some(current) = arena.get_mut(current).map(|n| n.get_mut()) {
+        let child = if let Some(current) = arena.get_mut(current) {
             process(current)?
         } else {
             panic!();
@@ -375,7 +363,7 @@ where
         }
 
         loop {
-            let current_node = arena.get(current).map(|n| n.get()).unwrap(); // todo
+            let current_node = arena.get(current).unwrap(); // todo
             if !current_node.sibling.is_none() {
                 break;
             }
@@ -388,7 +376,7 @@ where
                 current = parent;
             }
         }
-        let current_node = arena.get(current).map(|n| n.get()).unwrap(); // todo
+        let current_node = arena.get(current).unwrap(); // todo
 
         if let Some(sibling) = current_node.sibling {
             current = sibling;
@@ -396,10 +384,10 @@ where
     }
 }
 
-impl<P, R> Reconciler<P, R>
+impl<'r, P, R> Reconciler<'r, P, R>
 where
     P: RenderPrimitive,
-    R: Renderer<P>,
+    R: Renderer<'r, P>,
 {
     pub fn new(renderer: R) -> Self {
         Self {
@@ -441,21 +429,21 @@ where
                 Ok(fiber)
             }
         }?;
-        let id = arena.new_node(fiber);
+        let id = arena.insert(fiber);
         {
             let to_child = {
-                let mut node = arena.get_mut(id).unwrap().get_mut();
+                let mut node = arena.get_mut(id).unwrap();
                 node.render(&children)?
                     .into_iter()
                     .fold(Ok(None), |prev, next| {
                         let child_id = self.build_tree(arena, &next)?;
-                        let mut child = arena.get_mut(child_id).unwrap().get_mut();
+                        let mut child = arena.get_mut(child_id).unwrap();
                         child.parent = Some(id.clone());
                         child.sibling = prev?;
                         Ok(Some(child_id))
                     })?
             };
-            let mut node = arena.get_mut(id).unwrap().get_mut();
+            let mut node = arena.get_mut(id).unwrap();
             node.child = to_child;
         }
         Ok(id)
@@ -475,10 +463,11 @@ where
             let node_id = self.build_tree(&mut arena, element)?;
             let mut root_fiber = self.root_fiber();
             root_fiber.child = Some(node_id);
-            let root_id = arena.new_node(root_fiber);
-            arena.get_mut(node_id).unwrap().get_mut().parent = Some(root_id);
+            let root_id = arena.insert(root_fiber);
+            arena.get_mut(node_id).unwrap().parent = Some(root_id);
             root_id
         };
+        let (tx, rx) = channel::unbounded::<Update>();
         walk_fibers_mut(
             &mut arena,
             root_id,
@@ -497,44 +486,70 @@ where
                 Ok(())
             }),
         )?;
-        walk_fibers(
-            &arena,
-            root_id,
-            process_wrap(|fiber| {
-                match &fiber.body {
-                    Some(FiberBody::Native {
-                        native_instance: Some(native_instance),
-                        ..
-                    }) => {
-                        let parent = fiber.parent_native(&arena);
-                        if parent.as_ref().map_or(false, |p| p.is_native()) {
-                            if parent.as_ref().map_or(false, |p| p.is_root()) {
-                                debug!("append to container");
-                                self.renderer
-                                    .append_child_to_container(container, native_instance)?;
-                            }
-                            //  else if let Some(parent) =
-                            //     parent.and_then(|p| p.native_instance_mut())
-                            // {
-                            //     self.renderer
-                            //         .append_child_to_parent(parent, native_instance);
-                            // }
+        walk_fibers(&arena, root_id, |fiber, id| {
+            match &fiber.body {
+                Some(FiberBody::Native {
+                    native_instance: Some(native_instance),
+                    ..
+                }) => {
+                    let parent = fiber.parent_native(&arena);
+                    if parent.as_ref().map_or(false, |p| p.is_native()) {
+                        if parent.as_ref().map_or(false, |p| p.is_root()) {
+                            debug!("append to container");
+                            self.renderer
+                                .append_child_to_container(container, native_instance)?;
+                        } else if let Some(_) = parent.and_then(|p| p.native_instance()) {
+                            debug!("append to child");
+                            tx.send(Update::AppendChildToParent {
+                                parent: fiber.parent_native_id(&arena).unwrap(),
+                                child: *id,
+                            });
+                            // self.renderer
+                            //     .append_child_to_parent(parent, native_instance);
                         }
                     }
-                    _ => {}
                 }
-                Ok(())
-            }),
-        )?;
+                _ => {}
+            }
+            Ok(fiber.child)
+        });
+
+        for update in rx.try_iter() {
+            match update {
+                Update::AppendChildToParent { parent, child } => {
+                    let (parent, child) = arena.get2_mut(parent, child);
+                    match (parent, child) {
+                        (Some(parent), Some(child)) => {
+                            self.renderer.append_child_to_parent(
+                                parent.native_instance_mut().unwrap(),
+                                child.native_instance().unwrap(),
+                            )?;
+                        }
+                        _ => {
+                            warn!("todo");
+                        }
+                    }
+                }
+            }
+        }
+
         // self.renderer.append_child_to_container(container, tree);
         Ok(())
     }
 }
 
 #[derive(Debug)]
+enum Update {
+    AppendChildToParent {
+        parent: ArenaNodeId,
+        child: ArenaNodeId,
+    },
+}
+
+#[derive(Debug)]
 pub enum Op {}
 
-pub trait Renderer<P>
+pub trait Renderer<'r, P>
 where
     P: RenderPrimitive,
 {
@@ -543,13 +558,13 @@ where
     fn create_instance(&mut self, ty: &P, props: &P::Props) -> Result<Self::Instance>;
     fn append_child_to_container(
         &mut self,
-        container: &mut Self::Container,
-        child: &Self::Instance,
+        container: &'r mut Self::Container,
+        child: &'r Self::Instance,
     ) -> Result<()>;
     fn append_child_to_parent(
         &mut self,
-        parent: &mut Self::Instance,
-        child: &Self::Instance,
+        parent: &'r mut Self::Instance,
+        child: &'r Self::Instance,
     ) -> Result<()>;
 }
 
@@ -575,12 +590,13 @@ mod test {
     struct Str(String);
 
     #[derive(Debug, Clone)]
-    struct StringNode {
+    struct StringNode<'r> {
         value: String,
-        children: Vec<StringNode>,
+        lt: std::marker::PhantomData<&'r ()>,
+        children: Vec<StringNode<'r>>,
     }
 
-    impl StringNode {
+    impl<'r> StringNode<'r> {
         fn to_string(&self) -> String {
             format!(
                 "{}{}",
@@ -605,12 +621,13 @@ mod test {
         }
     }
 
-    impl Renderer<Str> for StringRenderer {
-        type Container = StringNode;
-        type Instance = StringNode;
+    impl<'r> Renderer<'r, Str> for StringRenderer {
+        type Container = StringNode<'r>;
+        type Instance = StringNode<'r>;
         fn create_instance(&mut self, ty: &Str, props: &()) -> Result<Self::Instance> {
             Ok(StringNode {
                 value: ty.0.to_owned(),
+                lt: std::marker::PhantomData,
                 children: vec![],
             })
         }
@@ -620,6 +637,8 @@ mod test {
             container: &mut Self::Container,
             child: &Self::Instance,
         ) -> Result<()> {
+            tracing::debug!("append {:?} to {:?}", child, container);
+            container.children.push(child.clone());
             Ok(())
         }
 
@@ -667,6 +686,7 @@ mod test {
         let mut reconciler = Reconciler::new(renderer);
         let mut container = reconciler.create_container(StringNode {
             value: "".to_owned(),
+            lt: std::marker::PhantomData,
             children: vec![],
         });
         let component = Element::component::<List>(
@@ -677,7 +697,8 @@ mod test {
         reconciler
             .update_container(&mut container, &component)
             .unwrap();
-        tracing::trace!("UHHH");
+        tracing::trace!("UHHH {:?}", container);
+
         // reconciler
         //     .update_container(&mut container, &component)
         //     .unwrap();
