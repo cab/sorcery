@@ -25,18 +25,18 @@ where
 struct FiberId(u32);
 
 #[derive(Debug)]
-struct Fiber<P, R>
+struct Fiber<'r, P, R>
 where
     P: RenderPrimitive,
 {
     id: FiberId,
-    body: Option<FiberBody<P, R>>,
+    body: Option<FiberBody<'r, P, R>>,
     sibling: Option<ArenaNodeId>,
     child: Option<ArenaNodeId>,
     parent: Option<ArenaNodeId>,
 }
 
-impl<P, R> Fiber<P, R>
+impl<'r, P, R> Fiber<'r, P, R>
 where
     P: RenderPrimitive,
 {
@@ -121,7 +121,7 @@ where
     }
 }
 
-impl<P, R> PartialEq<Fiber<P, R>> for Fiber<P, R>
+impl<'r, P, R> PartialEq<Fiber<'r, P, R>> for Fiber<'r, P, R>
 where
     P: RenderPrimitive,
 {
@@ -130,7 +130,7 @@ where
     }
 }
 
-impl<P, R> Fiber<P, R>
+impl<'r, P, R> Fiber<'r, P, R>
 where
     P: RenderPrimitive,
 {
@@ -169,6 +169,7 @@ where
             instance,
             props,
             native_instance: None,
+            native_instance_ref: None,
         };
         let state = Box::new(());
         Self {
@@ -215,7 +216,7 @@ where
 }
 
 #[derive(Debug)]
-enum FiberBody<P, R>
+enum FiberBody<'r, P, R>
 where
     P: RenderPrimitive,
 {
@@ -228,6 +229,7 @@ where
     Native {
         instance: P,
         native_instance: Option<R>,
+        native_instance_ref: Option<&'r R>,
         props: P::Props,
     },
 }
@@ -461,15 +463,21 @@ where
         Fiber::root(self.next_fiber_id())
     }
 
-    pub fn update_container(
+    pub fn update_container<'r>(
         &mut self,
-        ctx: &mut Context<P, R::Instance>,
-        container: &mut R::Container,
-        element: &Element<P>,
+        ctx: &mut Context<'r, P, R::Instance>,
+        container: &'r mut R::Container,
+        element: &'r Element<P>,
     ) -> Result<()> {
         let root_id = {
             let node_id = self.build_tree(&mut ctx.fibers, element)?;
-            let mut root_fiber = self.root_fiber();
+            let mut root_fiber = Fiber {
+                body: Some(FiberBody::Root),
+                id: self.next_fiber_id(),
+                child: None,
+                parent: None,
+                sibling: None,
+            };
             root_fiber.child = Some(node_id);
             let root_id = ctx.fibers.insert(root_fiber);
             ctx.fibers.get_mut(node_id).unwrap().parent = Some(root_id);
@@ -524,7 +532,7 @@ where
         for update in rx.try_iter() {
             match update {
                 Update::AppendChildToContainer { child } => {
-                    self.renderer.append_child_to_container(
+                    let r = self.renderer.append_child_to_container(
                         container,
                         ctx.fibers
                             .get_mut(child)
@@ -532,6 +540,7 @@ where
                             .take_native_instance()
                             .unwrap(),
                     )?;
+                    if let Some(fiber) = ctx.fibers.get_mut(child) {}
                 }
                 Update::AppendChildToParent { parent, child } => {
                     let (parent, child) = ctx.fibers.get2_mut(parent, child);
@@ -555,14 +564,14 @@ where
     }
 }
 
-pub struct Context<P, R>
+pub struct Context<'r, P, R>
 where
     P: RenderPrimitive,
 {
-    fibers: Arena<Fiber<P, R>>,
+    fibers: Arena<Fiber<'r, P, R>>,
 }
 
-impl<P, R> Context<P, R>
+impl<'r, P, R> Context<'r, P, R>
 where
     P: RenderPrimitive,
 {
