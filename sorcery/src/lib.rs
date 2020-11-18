@@ -364,6 +364,7 @@ impl<S: 'static + PartialEq> Dep for S {
 
 #[cfg(test)]
 mod test {
+    use test_env_log::test;
     mod sorcery {
         pub use super::super::*;
     }
@@ -405,19 +406,19 @@ mod test {
     //     Ok(Element::List(elements))
     // }
 
-    #[test]
-    fn it_creates_element() {
-        // let rendered =
-        //     test_render::<List2>(&vec!["a".to_string(), "b".to_string(), "c".to_string()]).unwrap();
-        // assert_eq!(rendered, "* a\n* b\n* c\n");
-    }
+    // #[test]
+    // fn it_creates_element() {
+    //     // let rendered =
+    //     //     test_render::<List2>(&vec!["a".to_string(), "b".to_string(), "c".to_string()]).unwrap();
+    //     // assert_eq!(rendered, "* a\n* b\n* c\n");
+    // }
 
-    #[test]
-    fn macro_yields_same_result() {
-        // let rendered =
-        //     test_render::<List2>(&vec!["a".to_string(), "b".to_string(), "c".to_string()]).unwrap();
-        // let macro_rendered =
-        //     test_render::<List>(&vec!["a".to_string(), "b".to_string(), "c".to_string()]).unwrap();
-        // assert_eq!(rendered, macro_rendered);
-    }
+    // #[test]
+    // fn macro_yields_same_result() {
+    //     // let rendered =
+    //     //     test_render::<List2>(&vec!["a".to_string(), "b".to_string(), "c".to_string()]).unwrap();
+    //     // let macro_rendered =
+    //     //     test_render::<List>(&vec!["a".to_string(), "b".to_string(), "c".to_string()]).unwrap();
+    //     // assert_eq!(rendered, macro_rendered);
+    // }
 }

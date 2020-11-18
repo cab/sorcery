@@ -11,4 +11,8 @@ thiserror = "^1.0"
 sorcery-codegen = { path = "../sorcery-codegen" }
 dyn-clone = "^1.0"
 indextree = "4.3.1"
+tracing = "0.1"
 
+[dev-dependencies]
+tracing-subscriber = {version = "0.1.6", features = ["chrono", "env-filter", "fmt"]}
+test-env-log = {version = "^0.2", features=["trace"], default-features=false}
