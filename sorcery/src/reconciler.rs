@@ -11,10 +11,10 @@ use std::{
     collections::{HashMap, VecDeque},
 };
 
-pub struct Reconciler<'r, P, R>
+pub struct Reconciler<P, R>
 where
-    R: Renderer<'r, P>,
     P: RenderPrimitive,
+    R: Renderer<P>,
 {
     next_fiber_id: u32,
     element_type: std::marker::PhantomData<P>,
@@ -69,6 +69,16 @@ where
             Some(FiberBody::Native {
                 native_instance, ..
             }) => native_instance.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn take_native_instance(&mut self) -> Option<R> {
+        match &mut self.body {
+            Some(FiberBody::Native {
+                ref mut native_instance,
+                ..
+            }) => native_instance.take(),
             _ => None,
         }
     }
@@ -384,10 +394,10 @@ where
     }
 }
 
-impl<'r, P, R> Reconciler<'r, P, R>
+impl<P, R> Reconciler<P, R>
 where
     P: RenderPrimitive,
-    R: Renderer<'r, P>,
+    R: Renderer<P>,
 {
     pub fn new(renderer: R) -> Self {
         Self {
@@ -453,7 +463,7 @@ where
         Fiber::root(self.next_fiber_id())
     }
 
-    pub fn update_container(
+    pub fn update_container<'u>(
         &mut self,
         container: &mut R::Container,
         element: &Element<P>,
@@ -496,8 +506,7 @@ where
                     if parent.as_ref().map_or(false, |p| p.is_native()) {
                         if parent.as_ref().map_or(false, |p| p.is_root()) {
                             debug!("append to container");
-                            self.renderer
-                                .append_child_to_container(container, native_instance)?;
+                            tx.send(Update::AppendChildToContainer { child: *id });
                         } else if let Some(_) = parent.and_then(|p| p.native_instance()) {
                             debug!("append to child");
                             tx.send(Update::AppendChildToParent {
@@ -516,13 +525,23 @@ where
 
         for update in rx.try_iter() {
             match update {
+                Update::AppendChildToContainer { child } => {
+                    self.renderer.append_child_to_container(
+                        container,
+                        arena
+                            .get_mut(child)
+                            .unwrap()
+                            .take_native_instance()
+                            .unwrap(),
+                    )?;
+                }
                 Update::AppendChildToParent { parent, child } => {
                     let (parent, child) = arena.get2_mut(parent, child);
                     match (parent, child) {
                         (Some(parent), Some(child)) => {
                             self.renderer.append_child_to_parent(
                                 parent.native_instance_mut().unwrap(),
-                                child.native_instance().unwrap(),
+                                child.take_native_instance().unwrap(),
                             )?;
                         }
                         _ => {
@@ -540,6 +559,9 @@ where
 
 #[derive(Debug)]
 enum Update {
+    AppendChildToContainer {
+        child: ArenaNodeId,
+    },
     AppendChildToParent {
         parent: ArenaNodeId,
         child: ArenaNodeId,
@@ -549,7 +571,7 @@ enum Update {
 #[derive(Debug)]
 pub enum Op {}
 
-pub trait Renderer<'r, P>
+pub trait Renderer<P>
 where
     P: RenderPrimitive,
 {
@@ -558,13 +580,13 @@ where
     fn create_instance(&mut self, ty: &P, props: &P::Props) -> Result<Self::Instance>;
     fn append_child_to_container(
         &mut self,
-        container: &'r mut Self::Container,
-        child: &'r Self::Instance,
+        container: &mut Self::Container,
+        child: Self::Instance,
     ) -> Result<()>;
     fn append_child_to_parent(
         &mut self,
-        parent: &'r mut Self::Instance,
-        child: &'r Self::Instance,
+        parent: &mut Self::Instance,
+        child: Self::Instance,
     ) -> Result<()>;
 }
 
@@ -578,11 +600,13 @@ mod test {
     use super::{NativeElement, Reconciler, RenderPrimitive, Renderer};
     use crate::{component, use_state, Component, ComponentContext, Element, Result};
 
-    struct StringRenderer {}
+    struct StringRenderer {
+        next_id: u32,
+    }
 
     impl StringRenderer {
         fn new() -> Self {
-            Self {}
+            Self { next_id: 0 }
         }
     }
 
@@ -590,13 +614,13 @@ mod test {
     struct Str(String);
 
     #[derive(Debug, Clone)]
-    struct StringNode<'r> {
+    struct StringNode {
         value: String,
-        lt: std::marker::PhantomData<&'r ()>,
-        children: Vec<StringNode<'r>>,
+        id: u32,
+        children: Vec<StringNode>,
     }
 
-    impl<'r> StringNode<'r> {
+    impl StringNode {
         fn to_string(&self) -> String {
             format!(
                 "{}{}",
@@ -621,13 +645,15 @@ mod test {
         }
     }
 
-    impl<'r> Renderer<'r, Str> for StringRenderer {
-        type Container = StringNode<'r>;
-        type Instance = StringNode<'r>;
+    impl Renderer<Str> for StringRenderer {
+        type Container = StringNode;
+        type Instance = StringNode;
         fn create_instance(&mut self, ty: &Str, props: &()) -> Result<Self::Instance> {
+            let id = self.next_id;
+            self.next_id += 1;
             Ok(StringNode {
+                id,
                 value: ty.0.to_owned(),
-                lt: std::marker::PhantomData,
                 children: vec![],
             })
         }
@@ -635,19 +661,20 @@ mod test {
         fn append_child_to_parent(
             &mut self,
             container: &mut Self::Container,
-            child: &Self::Instance,
+            child: Self::Instance,
         ) -> Result<()> {
             tracing::debug!("append {:?} to {:?}", child, container);
-            container.children.push(child.clone());
+            container.children.push(child);
             Ok(())
         }
 
         fn append_child_to_container(
             &mut self,
             container: &mut Self::Container,
-            child: &Self::Instance,
+            child: Self::Instance,
         ) -> Result<()> {
-            container.children.push(child.clone());
+            tracing::debug!("append {:?} to {:?}", child, container);
+            container.children.push(child);
             Ok(())
         }
     }
@@ -685,8 +712,8 @@ mod test {
         let renderer = StringRenderer::new();
         let mut reconciler = Reconciler::new(renderer);
         let mut container = reconciler.create_container(StringNode {
+            id: 1000,
             value: "".to_owned(),
-            lt: std::marker::PhantomData,
             children: vec![],
         });
         let component = Element::component::<List>(
