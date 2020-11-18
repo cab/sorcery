@@ -240,6 +240,19 @@ where
     }
 }
 
+fn process_ids_wrap<P, R>(
+    mut f: impl FnMut(&ArenaNodeId, &mut Arena<Fiber<P, R>>) -> Result<()>,
+) -> impl FnMut(&ArenaNodeId, &mut Arena<Fiber<P, R>>) -> Result<Option<ArenaNodeId>>
+where
+    P: RenderPrimitive,
+{
+    move |fiber, arena| {
+        f(fiber, arena)?;
+        let child = arena.get(*fiber).and_then(|n| n.get().child);
+        Ok(child)
+    }
+}
+
 fn process_wrap_mut<P, R>(
     mut f: impl FnMut(&mut Fiber<P, R>) -> Result<()>,
 ) -> impl FnMut(&mut Fiber<P, R>) -> Result<Option<ArenaNodeId>>
@@ -288,6 +301,49 @@ where
         }
 
         if let Some(sibling) = current.sibling(arena) {
+            current = sibling;
+        }
+    }
+}
+
+fn walk_fiber_ids<P, R>(
+    arena: &mut Arena<Fiber<P, R>>,
+    start: ArenaNodeId,
+    mut process: impl FnMut(&ArenaNodeId, &mut Arena<Fiber<P, R>>) -> Result<Option<ArenaNodeId>>,
+) -> Result<()>
+where
+    P: RenderPrimitive,
+{
+    let root = start;
+    let mut current = start;
+    loop {
+        let child = process(&current, arena)?;
+        if let Some(child) = child {
+            current = child;
+            continue;
+        }
+
+        if current == root {
+            return Ok(());
+        }
+
+        loop {
+            let current_node = arena.get(current).map(|n| n.get()).unwrap(); // todo
+            if !current_node.sibling.is_none() {
+                break;
+            }
+            if current_node.parent.is_none()
+                || current_node.parent.map(|p| p == root).unwrap_or(false)
+            {
+                return Ok(());
+            }
+            if let Some(parent) = current_node.parent {
+                current = parent;
+            }
+        }
+        let current_node = arena.get(current).map(|n| n.get()).unwrap(); // todo
+
+        if let Some(sibling) = current_node.sibling {
             current = sibling;
         }
     }
@@ -441,27 +497,28 @@ where
                 Ok(())
             }),
         )?;
-        walk_fibers_mut(
-            &mut arena,
+        walk_fibers(
+            &arena,
             root_id,
-            process_wrap_mut(|fiber| {
-                let parent = fiber.parent_native_mut(&mut arena);
+            process_wrap(|fiber| {
                 match &fiber.body {
                     Some(FiberBody::Native {
                         native_instance: Some(native_instance),
                         ..
                     }) => {
+                        let parent = fiber.parent_native(&arena);
                         if parent.as_ref().map_or(false, |p| p.is_native()) {
                             if parent.as_ref().map_or(false, |p| p.is_root()) {
                                 debug!("append to container");
                                 self.renderer
-                                    .append_child_to_container(container, native_instance);
-                            } else if let Some(parent) =
-                                parent.and_then(|p| p.native_instance_mut())
-                            {
-                                self.renderer
-                                    .append_child_to_parent(parent, native_instance);
+                                    .append_child_to_container(container, native_instance)?;
                             }
+                            //  else if let Some(parent) =
+                            //     parent.and_then(|p| p.native_instance_mut())
+                            // {
+                            //     self.renderer
+                            //         .append_child_to_parent(parent, native_instance);
+                            // }
                         }
                     }
                     _ => {}
