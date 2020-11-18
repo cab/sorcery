@@ -43,6 +43,25 @@ where
     }
 }
 
+pub trait StoredState: Any {
+    fn any(&self) -> &(dyn Any + '_);
+}
+
+impl fmt::Debug for dyn StoredState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StoredState").finish()
+    }
+}
+
+impl<T> StoredState for T
+where
+    T: Any,
+{
+    fn any(&self) -> &dyn Any {
+        self
+    }
+}
+
 #[derive(Clone)]
 pub struct ComponentElement<T>
 where
@@ -104,6 +123,8 @@ where
 
 pub trait RenderPrimitive: std::fmt::Debug + Clone {
     type Props: std::fmt::Debug + Default + Clone;
+    fn render(&self, props: &Self::Props, children: &[Element<Self>])
+        -> Result<Vec<Element<Self>>>;
 }
 
 impl<T> Element<T>
@@ -134,6 +155,13 @@ where
             children,
         })
     }
+
+    pub(crate) fn children(&self) -> &[Element<T>] {
+        match self {
+            Element::Component(comp_element) => &comp_element.children,
+            Element::Native(native) => &native.children,
+        }
+    }
 }
 
 impl<T> From<T> for Element<T>
@@ -155,10 +183,11 @@ where
     }
 }
 
-trait AnyComponent<T>
+pub(crate) trait AnyComponent<T>
 where
     T: RenderPrimitive,
 {
+    fn name(&self) -> String;
     fn new(props: &dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>
     where
         Self: Sized;
@@ -166,8 +195,17 @@ where
         &self,
         context: &mut ComponentContext,
         props: &dyn StoredProps,
-        children: Vec<Element<T>>,
+        children: &[Element<T>],
     ) -> Result<Element<T>>;
+}
+
+impl<P> Debug for dyn AnyComponent<P>
+where
+    P: RenderPrimitive,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!("AnyComponent({})", self.name()))
+    }
 }
 
 pub trait Component<T>
@@ -175,6 +213,7 @@ where
     T: RenderPrimitive,
 {
     type Props: StoredProps;
+    fn name(&self) -> String;
     fn new(props: &Self::Props) -> Self
     where
         Self: Sized;
@@ -182,7 +221,7 @@ where
         &self,
         context: &mut ComponentContext,
         props: &Self::Props,
-        children: Vec<Element<T>>,
+        children: &[Element<T>],
     ) -> Result<Element<T>>;
 }
 
@@ -192,6 +231,10 @@ where
     P: 'static,
     T: RenderPrimitive,
 {
+    fn name(&self) -> String {
+        C::name(self)
+    }
+
     fn new(props: &dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>
     where
         Self: Sized,
@@ -204,7 +247,7 @@ where
         &self,
         context: &mut ComponentContext,
         props: &dyn StoredProps,
-        children: Vec<Element<T>>,
+        children: &[Element<T>],
     ) -> Result<Element<T>> {
         let props = props.any().downcast_ref::<P>().ok_or(Error::InvalidProps)?;
         C::render(self, context, props, children)
