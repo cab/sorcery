@@ -19,7 +19,6 @@ where
     next_fiber_id: u32,
     element_type: std::marker::PhantomData<P>,
     renderer: R,
-    fibers: Arena<Fiber<P, R::Instance>>,
 }
 
 #[derive(Copy, Clone, Debug, PartialOrd, PartialEq, Hash, Eq)]
@@ -403,7 +402,6 @@ where
         Self {
             renderer,
             next_fiber_id: 0,
-            fibers: Arena::new(),
             element_type: std::marker::PhantomData,
         }
     }
@@ -421,7 +419,7 @@ where
 
     fn build_tree<'a>(
         &mut self,
-        arena: &'a mut Arena<Fiber<P, R::Instance>>,
+        arena: &mut Arena<Fiber<P, R::InstanceKey>>,
         element: &Element<P>,
     ) -> Result<ArenaNodeId> {
         debug!("rendering a {:?}\n\n", element);
@@ -459,27 +457,27 @@ where
         Ok(id)
     }
 
-    fn root_fiber(&mut self) -> Fiber<P, R::Instance> {
+    fn root_fiber(&mut self) -> Fiber<P, R::InstanceKey> {
         Fiber::root(self.next_fiber_id())
     }
 
-    pub fn update_container<'u>(
+    pub fn update_container(
         &mut self,
+        ctx: &mut Context<P, R::InstanceKey>,
         container: &mut R::Container,
         element: &Element<P>,
     ) -> Result<()> {
-        let mut arena = Arena::new();
         let root_id = {
-            let node_id = self.build_tree(&mut arena, element)?;
+            let node_id = self.build_tree(&mut ctx.fibers, element)?;
             let mut root_fiber = self.root_fiber();
             root_fiber.child = Some(node_id);
-            let root_id = arena.insert(root_fiber);
-            arena.get_mut(node_id).unwrap().parent = Some(root_id);
+            let root_id = ctx.fibers.insert(root_fiber);
+            ctx.fibers.get_mut(node_id).unwrap().parent = Some(root_id);
             root_id
         };
         let (tx, rx) = channel::unbounded::<Update>();
         walk_fibers_mut(
-            &mut arena,
+            &mut ctx.fibers,
             root_id,
             process_wrap_mut(|fiber| {
                 match &mut fiber.body {
@@ -496,13 +494,13 @@ where
                 Ok(())
             }),
         )?;
-        walk_fibers(&arena, root_id, |fiber, id| {
+        walk_fibers(&ctx.fibers, root_id, |fiber, id| {
             match &fiber.body {
                 Some(FiberBody::Native {
                     native_instance: Some(native_instance),
                     ..
                 }) => {
-                    let parent = fiber.parent_native(&arena);
+                    let parent = fiber.parent_native(&ctx.fibers);
                     if parent.as_ref().map_or(false, |p| p.is_native()) {
                         if parent.as_ref().map_or(false, |p| p.is_root()) {
                             debug!("append to container");
@@ -510,7 +508,7 @@ where
                         } else if let Some(_) = parent.and_then(|p| p.native_instance()) {
                             debug!("append to child");
                             tx.send(Update::AppendChildToParent {
-                                parent: fiber.parent_native_id(&arena).unwrap(),
+                                parent: fiber.parent_native_id(&ctx.fibers).unwrap(),
                                 child: *id,
                             });
                             // self.renderer
@@ -528,20 +526,16 @@ where
                 Update::AppendChildToContainer { child } => {
                     self.renderer.append_child_to_container(
                         container,
-                        arena
-                            .get_mut(child)
-                            .unwrap()
-                            .take_native_instance()
-                            .unwrap(),
+                        ctx.fibers.get(child).unwrap().native_instance().unwrap(),
                     )?;
                 }
                 Update::AppendChildToParent { parent, child } => {
-                    let (parent, child) = arena.get2_mut(parent, child);
+                    let (parent, child) = ctx.fibers.get2_mut(parent, child);
                     match (parent, child) {
                         (Some(parent), Some(child)) => {
                             self.renderer.append_child_to_parent(
                                 parent.native_instance_mut().unwrap(),
-                                child.take_native_instance().unwrap(),
+                                child.native_instance().unwrap(),
                             )?;
                         }
                         _ => {
@@ -554,6 +548,24 @@ where
 
         // self.renderer.append_child_to_container(container, tree);
         Ok(())
+    }
+}
+
+pub struct Context<P, R>
+where
+    P: RenderPrimitive,
+{
+    fibers: Arena<Fiber<P, R>>,
+}
+
+impl<P, R> Context<P, R>
+where
+    P: RenderPrimitive,
+{
+    fn new() -> Self {
+        Self {
+            fibers: Arena::new(),
+        }
     }
 }
 
@@ -576,17 +588,17 @@ where
     P: RenderPrimitive,
 {
     type Container;
-    type Instance: Clone + std::fmt::Debug;
-    fn create_instance(&mut self, ty: &P, props: &P::Props) -> Result<Self::Instance>;
+    type InstanceKey: Clone + std::fmt::Debug;
+    fn create_instance(&mut self, ty: &P, props: &P::Props) -> Result<Self::InstanceKey>;
     fn append_child_to_container(
         &mut self,
         container: &mut Self::Container,
-        child: Self::Instance,
+        child: &Self::InstanceKey,
     ) -> Result<()>;
     fn append_child_to_parent(
         &mut self,
-        parent: &mut Self::Instance,
-        child: Self::Instance,
+        parent: &Self::InstanceKey,
+        child: &Self::InstanceKey,
     ) -> Result<()>;
 }
 
@@ -597,16 +609,19 @@ mod test {
         pub use super::super::*;
     }
 
-    use super::{NativeElement, Reconciler, RenderPrimitive, Renderer};
+    use super::{Context, NativeElement, Reconciler, RenderPrimitive, Renderer};
     use crate::{component, use_state, Component, ComponentContext, Element, Result};
+    use generational_arena::{Arena, Index as ArenaIndex};
 
     struct StringRenderer {
-        next_id: u32,
+        arena: Arena<StringNode>,
     }
 
     impl StringRenderer {
         fn new() -> Self {
-            Self { next_id: 0 }
+            Self {
+                arena: Arena::new(),
+            }
         }
     }
 
@@ -616,18 +631,17 @@ mod test {
     #[derive(Debug, Clone)]
     struct StringNode {
         value: String,
-        id: u32,
-        children: Vec<StringNode>,
+        children: Vec<ArenaIndex>,
     }
 
     impl StringNode {
-        fn to_string(&self) -> String {
+        fn to_string(&self, arena: &Arena<StringNode>) -> String {
             format!(
                 "{}{}",
                 self.value,
                 self.children
                     .iter()
-                    .map(|c| c.to_string())
+                    .filter_map(|c| arena.get(*c).map(|n| n.to_string(arena)))
                     .collect::<Vec<_>>()
                     .join("")
             )
@@ -647,34 +661,33 @@ mod test {
 
     impl Renderer<Str> for StringRenderer {
         type Container = StringNode;
-        type Instance = StringNode;
-        fn create_instance(&mut self, ty: &Str, props: &()) -> Result<Self::Instance> {
-            let id = self.next_id;
-            self.next_id += 1;
-            Ok(StringNode {
-                id,
+        type InstanceKey = ArenaIndex;
+        fn create_instance(&mut self, ty: &Str, props: &()) -> Result<Self::InstanceKey> {
+            let node = StringNode {
                 value: ty.0.to_owned(),
                 children: vec![],
-            })
+            };
+            let id = self.arena.insert(node);
+            Ok(id)
         }
 
         fn append_child_to_parent(
             &mut self,
-            container: &mut Self::Container,
-            child: Self::Instance,
+            parent: &Self::InstanceKey,
+            child: &Self::InstanceKey,
         ) -> Result<()> {
-            tracing::debug!("append {:?} to {:?}", child, container);
-            container.children.push(child);
+            tracing::debug!("append {:?} to {:?}", child, parent);
+            // container.children.push(child);
             Ok(())
         }
 
         fn append_child_to_container(
             &mut self,
             container: &mut Self::Container,
-            child: Self::Instance,
+            child: &Self::InstanceKey,
         ) -> Result<()> {
             tracing::debug!("append {:?} to {:?}", child, container);
-            container.children.push(child);
+            // container.children.push(child);
             Ok(())
         }
     }
@@ -712,7 +725,6 @@ mod test {
         let renderer = StringRenderer::new();
         let mut reconciler = Reconciler::new(renderer);
         let mut container = reconciler.create_container(StringNode {
-            id: 1000,
             value: "".to_owned(),
             children: vec![],
         });
@@ -722,13 +734,13 @@ mod test {
             vec![Element::native(None, Str("hello".to_string()), (), vec![])],
         );
         reconciler
-            .update_container(&mut container, &component)
+            .update_container(&mut Context::new(), &mut container, &component)
             .unwrap();
         tracing::trace!("UHHH {:?}", container);
 
         // reconciler
         //     .update_container(&mut container, &component)
         //     .unwrap();
-        assert_eq!("testhello", &container.to_string());
+        assert_eq!("testhello", &container.to_string(&renderer.arena));
     }
 }
