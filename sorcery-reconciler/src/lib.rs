@@ -2,14 +2,27 @@ use crossbeam_channel as channel;
 use generational_arena::{Arena, Index as ArenaNodeId};
 use tracing::{debug, trace, warn};
 
-use crate::{
-    AnyComponent, Component, ComponentElement, ComponentId, Element, Key, NativeElement,
-    RenderPrimitive, Result, StoredProps, StoredState,
+use sorcery::{
+    AnyComponent, Component, ComponentContext, ComponentElement, ComponentId, Dep, Element, Key,
+    NativeElement, RenderPrimitive, StoredProps, StoredState,
 };
 use std::{
     any::Any,
     collections::{HashMap, VecDeque},
 };
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error<E>
+where
+    E: std::error::Error + 'static,
+{
+    #[error("renderer error")]
+    RendererError(#[from] E),
+    #[error(transparent)]
+    Sorcery(sorcery::Error),
+}
+
+type Result<T, E> = std::result::Result<T, Error<E>>;
 
 pub struct Reconciler<P, R>
 where
@@ -172,7 +185,7 @@ where
         }
     }
 
-    fn render(&mut self, children: &[Element<P>]) -> Result<Vec<Element<P>>> {
+    fn render(&mut self, children: &[Element<P>]) -> sorcery::Result<Vec<Element<P>>> {
         // let child_elements = self
         //     .children
         //     .iter_mut()
@@ -188,7 +201,7 @@ where
             Some(FiberBody::Component {
                 instance, props, ..
             }) => {
-                let mut context = super::Context::new();
+                let mut context = sorcery::Context::new();
                 let mut ccontext = context.component();
                 Ok(vec![instance.render(
                     &mut ccontext,
@@ -225,8 +238,8 @@ where
 }
 
 fn process_wrap<P, R>(
-    mut f: impl FnMut(&Fiber<P, R>) -> Result<()>,
-) -> impl FnMut(&Fiber<P, R>) -> Result<Option<ArenaNodeId>>
+    mut f: impl FnMut(&Fiber<P, R>) -> sorcery::Result<()>,
+) -> impl FnMut(&Fiber<P, R>) -> sorcery::Result<Option<ArenaNodeId>>
 where
     P: RenderPrimitive,
 {
@@ -236,11 +249,12 @@ where
     }
 }
 
-fn process_wrap_mut<P, R>(
-    mut f: impl FnMut(&mut Fiber<P, R>) -> Result<()>,
-) -> impl FnMut(&mut Fiber<P, R>) -> Result<Option<ArenaNodeId>>
+fn process_wrap_mut<E, P, R>(
+    mut f: impl FnMut(&mut Fiber<P, R>) -> Result<(), E>,
+) -> impl FnMut(&mut Fiber<P, R>) -> Result<Option<ArenaNodeId>, E>
 where
     P: RenderPrimitive,
+    E: std::error::Error + 'static,
 {
     move |fiber| {
         f(fiber)?;
@@ -251,8 +265,8 @@ where
 fn walk_fibers<P, R>(
     arena: &Arena<Fiber<P, R>>,
     start: ArenaNodeId,
-    mut process: impl FnMut(&Fiber<P, R>, &ArenaNodeId) -> Result<Option<ArenaNodeId>>,
-) -> Result<()>
+    mut process: impl FnMut(&Fiber<P, R>, &ArenaNodeId) -> sorcery::Result<Option<ArenaNodeId>>,
+) -> sorcery::Result<()>
 where
     P: RenderPrimitive,
 {
@@ -298,8 +312,11 @@ where
 fn walk_fiber_ids<P, R>(
     arena: &mut Arena<Fiber<P, R>>,
     start: ArenaNodeId,
-    mut process: impl FnMut(&ArenaNodeId, &mut Arena<Fiber<P, R>>) -> Result<Option<ArenaNodeId>>,
-) -> Result<()>
+    mut process: impl FnMut(
+        &ArenaNodeId,
+        &mut Arena<Fiber<P, R>>,
+    ) -> sorcery::Result<Option<ArenaNodeId>>,
+) -> sorcery::Result<()>
 where
     P: RenderPrimitive,
 {
@@ -338,13 +355,14 @@ where
     }
 }
 
-fn walk_fibers_mut<P, R>(
+fn walk_fibers_mut<E, P, R>(
     arena: &mut Arena<Fiber<P, R>>,
     start: ArenaNodeId,
-    mut process: impl FnMut(&mut Fiber<P, R>) -> Result<Option<ArenaNodeId>>,
-) -> Result<()>
+    mut process: impl FnMut(&mut Fiber<P, R>) -> Result<Option<ArenaNodeId>, E>,
+) -> Result<(), E>
 where
     P: RenderPrimitive,
+    E: std::error::Error + 'static,
 {
     let root = start;
     let mut current = start;
@@ -413,15 +431,15 @@ where
         &mut self,
         arena: &mut Arena<Fiber<P, R::InstanceKey>>,
         element: &Element<P>,
-    ) -> Result<ArenaNodeId> {
+    ) -> Result<ArenaNodeId, R::Error> {
         debug!("rendering a {:?}\n\n", element);
         let children = element.children();
         let mut fiber = match element {
             Element::Component(comp_element) => {
-                let instance = comp_element.construct()?;
+                let instance = comp_element.construct().map_err(Error::Sorcery)?;
                 let fiber =
-                    Fiber::component(self.next_fiber_id(), instance, comp_element.props.clone());
-                Ok(fiber)
+                    Fiber::component(self.next_fiber_id(), instance, comp_element.clone_props());
+                Result::<_, R::Error>::Ok(fiber)
             }
             Element::Native(native) => {
                 let instance = native.ty.clone();
@@ -433,9 +451,10 @@ where
         {
             let to_child = {
                 let mut node = arena.get_mut(id).unwrap();
-                node.render(&children)?
+                node.render(&children)
+                    .map_err(Error::Sorcery)?
                     .into_iter()
-                    .fold(Ok(None), |prev, next| {
+                    .fold(Result::<_, R::Error>::Ok(None), |prev, next| {
                         let child_id = self.build_tree(arena, &next)?;
                         let mut child = arena.get_mut(child_id).unwrap();
                         child.parent = Some(id.clone());
@@ -458,7 +477,7 @@ where
         ctx: &mut Context<P, R::InstanceKey>,
         container: &mut R::Container,
         element: &Element<P>,
-    ) -> Result<()> {
+    ) -> Result<(), R::Error> {
         let root_id = {
             let node_id = self.build_tree(&mut ctx.fibers, element)?;
             let mut root_fiber = Fiber {
@@ -591,31 +610,33 @@ pub trait Renderer<P>
 where
     P: RenderPrimitive,
 {
+    type Error: std::error::Error;
     type Container;
     type InstanceKey: Clone + std::fmt::Debug;
-    fn create_instance(&mut self, ty: &P, props: &P::Props) -> Result<Self::InstanceKey>;
+    fn create_instance(
+        &mut self,
+        ty: &P,
+        props: &P::Props,
+    ) -> std::result::Result<Self::InstanceKey, Self::Error>;
     fn append_child_to_container(
         &mut self,
         container: &mut Self::Container,
         child: Self::InstanceKey,
-    ) -> Result<()>;
+    ) -> std::result::Result<(), Self::Error>;
     fn append_child_to_parent<'r>(
         &mut self,
         parent: Self::InstanceKey,
         child: Self::InstanceKey,
-    ) -> Result<()>;
+    ) -> std::result::Result<(), Self::Error>;
 }
 
 #[cfg(test)]
 mod test {
     use test_env_log::test;
-    mod sorcery {
-        pub use super::super::*;
-    }
 
     use super::{Context, NativeElement, Reconciler, RenderPrimitive, Renderer};
-    use crate::{component, use_state, Component, ComponentContext, Element, Result};
     use generational_arena::{Arena, Index as ArenaIndex};
+    use sorcery::{component, use_state, Component, ComponentContext, Element};
 
     struct StringRenderer {
         arena: Arena<StringNode>,
@@ -638,6 +659,10 @@ mod test {
         children: Vec<ArenaIndex>,
     }
 
+    #[derive(thiserror::Error, Debug)]
+    #[error("error {0}")]
+    struct Error(String);
+
     impl StringNode {
         fn to_string(&self, arena: &Arena<StringNode>) -> String {
             format!(
@@ -658,7 +683,7 @@ mod test {
             &self,
             props: &Self::Props,
             children: &[Element<Self>],
-        ) -> Result<Vec<Element<Self>>> {
+        ) -> sorcery::Result<Vec<Element<Self>>> {
             Ok(children.to_vec())
         }
     }
@@ -666,7 +691,8 @@ mod test {
     impl Renderer<Str> for StringRenderer {
         type Container = StringNode;
         type InstanceKey = ArenaIndex;
-        fn create_instance(&mut self, ty: &Str, props: &()) -> Result<Self::InstanceKey> {
+        type Error = Error;
+        fn create_instance(&mut self, ty: &Str, props: &()) -> Result<Self::InstanceKey, Error> {
             let node = StringNode {
                 value: ty.0.to_owned(),
                 children: vec![],
@@ -679,7 +705,7 @@ mod test {
             &mut self,
             parent: Self::InstanceKey,
             child: Self::InstanceKey,
-        ) -> Result<()> {
+        ) -> Result<(), Error> {
             tracing::debug!("append {:?} to {:?}", child, parent);
             if let Some(p) = self.arena.get_mut(parent) {
                 p.children.push(child);
@@ -691,7 +717,7 @@ mod test {
             &mut self,
             container: &'r mut Self::Container,
             child: Self::InstanceKey,
-        ) -> Result<()> {
+        ) -> Result<(), Error> {
             tracing::debug!("append {:?} to {:?}", child, container);
             container.children.push(child);
             Ok(())
@@ -716,7 +742,7 @@ mod test {
             context: &mut ComponentContext,
             props: &Self::Props,
             children: &[Element<Str>],
-        ) -> Result<Element<Str>> {
+        ) -> sorcery::Result<Element<Str>> {
             let (index, set_index) = use_state(context, 1);
             Ok(Element::native(
                 None,

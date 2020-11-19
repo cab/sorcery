@@ -1,6 +1,4 @@
-mod reconciler;
 use dyn_clone::DynClone;
-pub use reconciler::Renderer;
 pub use sorcery_codegen::component;
 use std::{
     any::{Any, TypeId},
@@ -89,12 +87,16 @@ impl<T> ComponentElement<T>
 where
     T: RenderPrimitive,
 {
-    pub(crate) fn construct(&self) -> Result<Box<dyn AnyComponent<T>>> {
+    pub fn construct(&self) -> Result<Box<dyn AnyComponent<T>>> {
         (self.constructor)(self.props.as_ref())
     }
 
-    pub(crate) fn props(&self) -> &dyn StoredProps {
+    pub fn props(&self) -> &dyn StoredProps {
         self.props.as_ref()
+    }
+
+    pub fn clone_props(&self) -> Box<dyn StoredProps> {
+        self.props.clone()
     }
 }
 
@@ -103,10 +105,10 @@ pub struct NativeElement<T>
 where
     T: RenderPrimitive + std::fmt::Debug,
 {
-    key: Option<Key>,
-    ty: T,
-    props: T::Props,
-    children: Vec<Element<T>>,
+    pub key: Option<Key>,
+    pub ty: T,
+    pub props: T::Props,
+    pub children: Vec<Element<T>>,
 }
 
 #[derive(Debug, Hash, PartialOrd, PartialEq, Ord, Eq)]
@@ -156,7 +158,7 @@ where
         })
     }
 
-    pub(crate) fn children(&self) -> &[Element<T>] {
+    pub fn children(&self) -> &[Element<T>] {
         match self {
             Element::Component(comp_element) => &comp_element.children,
             Element::Native(native) => &native.children,
@@ -183,7 +185,7 @@ where
     }
 }
 
-pub(crate) trait AnyComponent<T>
+pub trait AnyComponent<T>
 where
     T: RenderPrimitive,
 {
@@ -344,7 +346,7 @@ enum HookState {
     Effect(Vec<Box<dyn Dep>>),
 }
 
-trait Dep {
+pub trait Dep {
     fn as_any(&self) -> &dyn Any;
     fn compare(&self, other: &dyn Dep) -> bool;
 }
