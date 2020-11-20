@@ -1,5 +1,6 @@
+use dyn_clone::DynClone;
 use generational_arena::{Arena, Index as ArenaIndex};
-use sorcery::RenderPrimitive;
+use sorcery::{Props, RenderPrimitive, StoredProps};
 use sorcery_reconciler::Reconciler;
 use std::collections::HashMap;
 use tracing::{debug, trace, warn};
@@ -25,8 +26,62 @@ pub struct Html {
     tag: String,
 }
 
+trait StoredCallbackArg: std::any::Any + DynClone {}
+
+dyn_clone::clone_trait_object!(StoredCallbackArg);
+
+impl std::fmt::Debug for dyn StoredCallbackArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredCallbackArg").finish()
+    }
+}
+
+#[derive(Clone)]
+pub enum Prop {
+    Str(String),
+    Callback(std::rc::Rc<dyn Fn(&dyn StoredCallbackArg)>),
+}
+
+impl std::fmt::Debug for Prop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Prop").finish()
+    }
+}
+
+impl From<String> for Prop {
+    fn from(s: String) -> Self {
+        Prop::Str(s)
+    }
+}
+
+impl From<&str> for Prop {
+    fn from(s: &str) -> Self {
+        Prop::Str(s.to_owned())
+    }
+}
+
+impl<F> From<F> for Prop
+where
+    F: Fn(&dyn StoredCallbackArg) + 'static,
+{
+    fn from(f: F) -> Self {
+        Prop::Callback(std::rc::Rc::new(f))
+    }
+}
+
+#[derive(Props, Clone)]
+struct HtmlProps<'a> {
+    on_click: &'a dyn Fn(),
+}
+
+impl<'a> std::fmt::Debug for HtmlProps<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HtmlProps").finish()
+    }
+}
+
 impl RenderPrimitive for Html {
-    type Props = HashMap<String, String>;
+    type Props = HtmlProps;
 
     fn for_name(name: &str) -> Option<Self> {
         Some(Html {
@@ -84,7 +139,16 @@ impl sorcery_reconciler::Renderer<Html> for Renderer {
     ) -> Result<Self::InstanceKey> {
         let element = self.document.create_element(&ty.tag)?;
         for (k, v) in props {
-            element.set_attribute(k, v)?;
+            match v {
+                Prop::Str(s) => element.set_attribute(k, s)?,
+                Prop::Callback(cb) => match k.as_str() {
+                    // "onClick" => element.add_event_listener_with_callback(
+                    //     "click",
+                    //     Closure::wrap(cb.downcast_ref()),
+                    // ),
+                    _ => panic!(),
+                },
+            }
         }
         let id = self.nodes.insert(element.unchecked_into());
         Ok(id)

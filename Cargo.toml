@@ -1,2 +1,2 @@
 [workspace]
-members = ["sorcery", "sorcery-rsx", "sorcery-codegen", "sorcery-reconciler", "sorcery-dom", "sorcery-dom/examples/hello-world"]
+members = ["sorcery", "sorcery-macros", "sorcery-rsx", "sorcery-codegen", "sorcery-reconciler", "sorcery-dom", "sorcery-dom/examples/hello-world"]

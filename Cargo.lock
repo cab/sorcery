@@ -459,6 +459,7 @@ version = "0.1.0"
 dependencies = [
  "dyn-clone",
  "sorcery-codegen",
+ "sorcery-macros",
  "sorcery-rsx",
  "test-env-log",
  "thiserror",
@@ -483,6 +484,7 @@ name = "sorcery-dom"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "dyn-clone",
  "generational-arena",
  "sorcery",
  "sorcery-reconciler",
@@ -492,6 +494,15 @@ dependencies = [
  "tracing-subscriber 0.1.6",
  "wasm-bindgen",
  "web-sys",
+]
+
+[[package]]
+name = "sorcery-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

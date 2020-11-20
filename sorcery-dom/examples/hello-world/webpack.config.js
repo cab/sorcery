@@ -14,6 +14,14 @@ module.exports = {
       template: './index.html',
     }),
     new WasmPackPlugin({
+      watchDirectories: [
+        path.resolve(__dirname, 'src'),
+        path.resolve(__dirname, '..', '..', '..', 'sorcery', 'src'),
+        path.resolve(__dirname, '..', '..', '..', 'sorcery-macros', 'src'),
+        path.resolve(__dirname, '..', '..', '..', 'sorcery-rsx', 'src'),
+        path.resolve(__dirname, '..', '..', '..', 'sorcery-dom', 'src'),
+        path.resolve(__dirname, '..', '..', '..', 'sorcery-reconciler', 'src'),
+      ],
       crateDirectory: path.resolve(__dirname, '.'),
     }),
   ],

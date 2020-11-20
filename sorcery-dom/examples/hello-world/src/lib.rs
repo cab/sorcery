@@ -1,4 +1,4 @@
-use sorcery::{rsx, Component, ComponentContext, Element};
+use sorcery::{rsx, use_state, Component, ComponentContext, Element};
 use sorcery_dom::{render, Html};
 use tracing::debug;
 use wasm_bindgen::prelude::*;
@@ -38,9 +38,13 @@ impl Component<Html> for App {
         props: &Self::Props,
         children: &[Element<Html>],
     ) -> sorcery::Result<Element<Html>> {
+        let (greeting, set_greeting) = use_state(context, "hello");
         let g = "world";
+
         Ok(rsx! {
-            <div class="test-class">"hello "
+            <div class="test-class" onClick={|e: ()| {
+
+            }}>{greeting} " "
                 <span key="blue">
                     <Blue {g} />
                 </span>

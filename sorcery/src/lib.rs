@@ -6,6 +6,7 @@ use std::{
     fmt::{self, Debug},
 };
 
+pub use sorcery_macros::Props;
 pub use sorcery_rsx::rsx;
 
 #[derive(thiserror::Error, Debug)]
@@ -128,8 +129,13 @@ where
     Text(String),
 }
 
+pub trait Props {
+    type Builder;
+    fn builder() -> Self::Builder;
+}
+
 pub trait RenderPrimitive: std::fmt::Debug + Clone {
-    type Props: std::fmt::Debug + Default + Clone;
+    type Props<'a>: Props + std::fmt::Debug + Clone;
     fn for_name(name: &str) -> Option<Self>;
     fn render(&self, props: &Self::Props, children: &[Element<Self>])
         -> Result<Vec<Element<Self>>>;
@@ -184,25 +190,6 @@ where
             Element::Component(comp_element) => &comp_element.children,
             Element::Native(native) => &native.children,
         }
-    }
-}
-
-impl<T> From<T> for Element<T>
-where
-    T: RenderPrimitive,
-{
-    fn from(element: T) -> Self {
-        Element::native(None, element, T::Props::default(), vec![])
-    }
-}
-
-impl<K, T> From<(K, T)> for Element<T>
-where
-    K: Into<Key>,
-    T: RenderPrimitive,
-{
-    fn from((key, element): (K, T)) -> Self {
-        Element::native(Some(key.into()), element, T::Props::default(), vec![])
     }
 }
 

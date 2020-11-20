@@ -1,6 +1,6 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{quote, format_ident};
 use std::collections::HashMap;
 use syn::{
     braced,
@@ -15,16 +15,17 @@ fn expand_props(props: &HashMap<Ident, Expr>) -> proc_macro2::TokenStream {
         .iter()
         .map(|(k, v)| {
             let key = k.to_string();
+            let setter = format_ident!("set_{}", key);
             quote! {
-                props.insert(#key.to_string(), #v.to_string());
+                props. #setter ((#v).into());
             }
         })
         .collect::<Vec<_>>();
     quote! {
         {
-            let mut props = std::collections::HashMap::new();
+            let mut builder = <Self::Primitive as sorcery::RenderPrimitive>::Props::new();
             #(#pairs)*
-            props
+            builder.build()
         }
     }
 }
