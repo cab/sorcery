@@ -39,8 +39,8 @@ impl Component<Html> for App {
         children: &[Element<Html>],
     ) -> sorcery::Result<Element<Html>> {
         let g = "world";
-        rsx! {
-            <div class="test-class">"hello " {g} "!" </div>
-        }
+        Ok(rsx! {
+            <div class="test-class">"hello " <div><div>{g}</div></div> "!" </div>
+        })
     }
 }

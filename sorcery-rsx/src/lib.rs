@@ -20,7 +20,7 @@ pub fn rsx(tokens: TokenStream) -> TokenStream {
             if first_char.is_lowercase() {
                 // native element
                 quote! {
-                    sorcery::Element::native_for_name(None, #tag_name, (), vec![#(#children),*])
+                    sorcery::Element::native_for_name(None, #tag_name, (), vec![#(#children),*])?
                 }
             } else {
                 quote! {
@@ -48,6 +48,7 @@ struct Element {
     nodes: Vec<Node>,
 }
 
+// use a struct to avoid infinitely expanding Fn types
 struct Walker<'a, O> {
     e: Box<dyn Fn(&'a Element, Vec<O>) -> O>,
     t: Box<dyn Fn(&'a Text) -> O>,
