@@ -29,7 +29,7 @@ impl Component<Html> for App {
     where
         Self: Sized,
     {
-        App {}
+        Self {}
     }
 
     fn render(
@@ -40,7 +40,35 @@ impl Component<Html> for App {
     ) -> sorcery::Result<Element<Html>> {
         let g = "world";
         Ok(rsx! {
-            <div class="test-class">"hello " <div><div>{g}</div></div> "!" </div>
+            <div class="test-class">"hello "
+                <span>
+                    <Blue {"world"} />
+                </span>
+                "!"
+            </div>
+        })
+    }
+}
+
+struct Blue {}
+
+impl Component<Html> for Blue {
+    type Props = String;
+    fn new(props: &Self::Props) -> Self
+    where
+        Self: Sized,
+    {
+        Self {}
+    }
+
+    fn render(
+        &self,
+        context: &mut ComponentContext,
+        props: &Self::Props,
+        children: &[Element<Html>],
+    ) -> sorcery::Result<Element<Html>> {
+        Ok(rsx! {
+            <span style="color: blue">{props}</span>
         })
     }
 }

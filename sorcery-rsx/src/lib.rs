@@ -1,13 +1,33 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
+use std::collections::HashMap;
 use syn::{
     braced,
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
-    token, Field, Ident, Result, Token,
+    token, Expr, Field, Ident, Result, Token,
 };
+
+fn expand_props(props: &HashMap<Ident, Expr>) -> proc_macro2::TokenStream {
+    let pairs = props
+        .iter()
+        .map(|(k, v)| {
+            let key = k.to_string();
+            quote! {
+                props.insert(#key.to_string(), #v.to_string());
+            }
+        })
+        .collect::<Vec<_>>();
+    quote! {
+        {
+            let mut props = std::collections::HashMap::new();
+            #(#pairs)*
+            props
+        }
+    }
+}
 
 #[proc_macro]
 pub fn rsx(tokens: TokenStream) -> TokenStream {
@@ -17,14 +37,19 @@ pub fn rsx(tokens: TokenStream) -> TokenStream {
             let tag = &element.tag;
             let tag_name = element.tag.to_string();
             let first_char = tag_name.chars().next().unwrap();
+            let props = if let Some(direct) = &element.direct_props {
+                quote!{ #direct }
+            } else { 
+                expand_props(&element.props)
+            };
             if first_char.is_lowercase() {
                 // native element
                 quote! {
-                    sorcery::Element::native_for_name(None, #tag_name, (), vec![#(#children),*])?
+                    sorcery::Element::native_for_name(None, #tag_name, std::convert::TryInto::try_into(#props).expect("invalid props"), vec![#(#children),*]).expect("no such native element")
                 }
             } else {
                 quote! {
-                    sorcery::Element::component::<#tag>(None, (), vec![#(#children),*])
+                    sorcery::Element::component::<#tag>(None, std::convert::TryInto::try_into(#props).expect("invalid props"), vec![#(#children),*])
                 }
             }
         },
@@ -44,7 +69,8 @@ pub fn rsx(tokens: TokenStream) -> TokenStream {
 #[derive(Debug)]
 struct Element {
     tag: Ident,
-    props: (),
+    props: HashMap<Ident, syn::Expr>,
+    direct_props: Option<syn::Expr>,
     nodes: Vec<Node>,
 }
 
@@ -111,6 +137,8 @@ impl Parse for Element {
             input.parse::<Token![<]>()?;
             let tag = input.parse::<Ident>()?;
             let mut is_closed = false;
+            let mut props = HashMap::new();
+            let mut direct_props = None;
             loop {
                 if input.peek(Token![>]) {
                     input.parse::<Token![>]>()?;
@@ -122,35 +150,43 @@ impl Parse for Element {
                     is_closed = true;
                     break;
                 }
-                let prop = input.parse::<Ident>()?;
-                let prop_value = if input.peek(token::Eq) {
-                    input.parse::<Token![=]>()?;
-                    if input.peek(token::Brace) {
-                        let content;
-                        braced!(content in input);
-                        let expr = content.parse::<syn::Expr>()?;
-                        expr
-                    } else {
-                        if let Some(s) = input.parse::<syn::LitStr>().ok() {
-                            syn::Expr::Lit(syn::ExprLit {
-                                attrs: vec![],
-                                lit: syn::Lit::Str(s),
-                            })
-                        } else {
-                            let expr = input.parse::<syn::Expr>()?;
+                if input.peek(Ident) {
+                    let prop = input.parse::<Ident>()?;
+                    let prop_value = if input.peek(token::Eq) {
+                        input.parse::<Token![=]>()?;
+                        if input.peek(token::Brace) {
+                            let content;
+                            braced!(content in input);
+                            let expr = content.parse::<syn::Expr>()?;
                             expr
+                        } else {
+                            if let Some(s) = input.parse::<syn::LitStr>().ok() {
+                                syn::Expr::Lit(syn::ExprLit {
+                                    attrs: vec![],
+                                    lit: syn::Lit::Str(s),
+                                })
+                            } else {
+                                let expr = input.parse::<syn::Expr>()?;
+                                expr
+                            }
                         }
-                    }
+                    } else {
+                        syn::parse_str("true")?
+                    };
+                    props.insert(prop, prop_value);
                 } else {
-                    syn::parse_str("true")?
-                };
-                println!("prop {:?} = {:?}", prop, prop_value);
+                    let content;
+                    braced!(content in input);
+                    let expr = content.parse::<syn::Expr>()?;
+                    direct_props = Some(expr);
+                }
             }
 
             if is_closed {
                 Ok(Element {
                     tag,
-                    props: (),
+                    props,
+                    direct_props,
                     nodes: vec![],
                 })
             } else {
@@ -176,8 +212,9 @@ impl Parse for Element {
                 input.parse::<Token![>]>()?;
                 Ok(Element {
                     tag,
-                    props: (),
+                    props,
                     nodes,
+                    direct_props,
                 })
             }
         } else {

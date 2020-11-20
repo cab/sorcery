@@ -1,6 +1,7 @@
 use generational_arena::{Arena, Index as ArenaIndex};
 use sorcery::RenderPrimitive;
 use sorcery_reconciler::Reconciler;
+use std::collections::HashMap;
 use tracing::{debug, trace, warn};
 use wasm_bindgen::{prelude::*, JsCast};
 use web_sys::{Document, Element, HtmlElement, Node};
@@ -20,18 +21,17 @@ impl From<wasm_bindgen::JsValue> for Error {
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, Clone)]
-pub enum Html {
-    Div,
+pub struct Html {
+    tag: String,
 }
 
 impl RenderPrimitive for Html {
-    type Props = ();
+    type Props = HashMap<String, String>;
 
     fn for_name(name: &str) -> Option<Self> {
-        match name {
-            "div" => Some(Html::Div),
-            _ => None,
-        }
+        Some(Html {
+            tag: name.to_string(),
+        })
     }
 
     fn render(
@@ -39,9 +39,7 @@ impl RenderPrimitive for Html {
         props: &Self::Props,
         children: &[sorcery::Element<Self>],
     ) -> sorcery::Result<Vec<sorcery::Element<Self>>> {
-        match self {
-            Html::Div => Ok(children.to_vec()),
-        }
+        Ok(children.to_vec())
     }
 }
 
@@ -79,8 +77,15 @@ impl sorcery_reconciler::Renderer<Html> for Renderer {
     type TextInstanceKey = ArenaIndex;
     type Error = Error;
 
-    fn create_instance(&mut self, ty: &Html, props: &()) -> Result<Self::InstanceKey> {
-        let element = self.document.create_element("div")?;
+    fn create_instance(
+        &mut self,
+        ty: &Html,
+        props: &<Html as RenderPrimitive>::Props,
+    ) -> Result<Self::InstanceKey> {
+        let element = self.document.create_element(&ty.tag)?;
+        for (k, v) in props {
+            element.set_attribute(k, v)?;
+        }
         let id = self.nodes.insert(element.unchecked_into());
         Ok(id)
     }
