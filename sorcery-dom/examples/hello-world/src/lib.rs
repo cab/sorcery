@@ -41,8 +41,8 @@ impl Component<Html> for App {
         let g = "world";
         Ok(rsx! {
             <div class="test-class">"hello "
-                <span>
-                    <Blue {"world"} />
+                <span key="blue">
+                    <Blue {g} />
                 </span>
                 "!"
             </div>

@@ -42,14 +42,19 @@ pub fn rsx(tokens: TokenStream) -> TokenStream {
             } else { 
                 expand_props(&element.props)
             };
+            let key = if let Some(key) = &element.key {
+                quote! { Some(#key.into()) }
+            } else {
+                quote!{ None }
+            };
             if first_char.is_lowercase() {
                 // native element
                 quote! {
-                    sorcery::Element::native_for_name(None, #tag_name, std::convert::TryInto::try_into(#props).expect("invalid props"), vec![#(#children),*]).expect("no such native element")
+                    sorcery::Element::native_for_name(#key, #tag_name, std::convert::TryInto::try_into(#props).map_err(|_| sorcery::Error::InvalidProps)?, vec![#(#children),*])?
                 }
             } else {
                 quote! {
-                    sorcery::Element::component::<#tag>(None, std::convert::TryInto::try_into(#props).expect("invalid props"), vec![#(#children),*])
+                    sorcery::Element::component::<#tag>(#key, std::convert::TryInto::try_into(#props).map_err(|_| sorcery::Error::InvalidProps)?, vec![#(#children),*])
                 }
             }
         },
@@ -69,6 +74,7 @@ pub fn rsx(tokens: TokenStream) -> TokenStream {
 #[derive(Debug)]
 struct Element {
     tag: Ident,
+    key: Option<syn::Expr>,
     props: HashMap<Ident, syn::Expr>,
     direct_props: Option<syn::Expr>,
     nodes: Vec<Node>,
@@ -139,6 +145,7 @@ impl Parse for Element {
             let mut is_closed = false;
             let mut props = HashMap::new();
             let mut direct_props = None;
+            let mut key = None;
             loop {
                 if input.peek(Token![>]) {
                     input.parse::<Token![>]>()?;
@@ -173,7 +180,11 @@ impl Parse for Element {
                     } else {
                         syn::parse_str("true")?
                     };
-                    props.insert(prop, prop_value);
+                    if prop.to_string() == "key" {
+                        key = Some(prop_value);
+                    } else {
+                        props.insert(prop, prop_value);
+                    }
                 } else {
                     let content;
                     braced!(content in input);
@@ -186,6 +197,7 @@ impl Parse for Element {
                 Ok(Element {
                     tag,
                     props,
+                    key,
                     direct_props,
                     nodes: vec![],
                 })
@@ -213,6 +225,7 @@ impl Parse for Element {
                 Ok(Element {
                     tag,
                     props,
+                    key,
                     nodes,
                     direct_props,
                 })
