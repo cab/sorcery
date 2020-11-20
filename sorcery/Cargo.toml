@@ -6,9 +6,15 @@ license = "MIT"
 name = "sorcery"
 version = "0.1.0"
 
+[features]
+default = ["rsx"]
+
+rsx = ["sorcery-rsx"]
+
 [dependencies]
 dyn-clone = "^1.0"
 sorcery-codegen = {path = "../sorcery-codegen"}
+sorcery-rsx = {optional = true, path = "../sorcery-rsx"}
 thiserror = "^1.0"
 tracing = "0.1"
 

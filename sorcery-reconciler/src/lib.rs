@@ -17,12 +17,12 @@ where
     E: std::error::Error + 'static,
 {
     #[error("renderer error")]
-    RendererError(#[from] E),
+    RendererError(E),
     #[error(transparent)]
-    Sorcery(sorcery::Error),
+    Sorcery(#[from] sorcery::Error),
 }
 
-type Result<T, E> = std::result::Result<T, Error<E>>;
+pub type Result<T, E> = std::result::Result<T, Error<E>>;
 
 pub struct Reconciler<P, R>
 where
@@ -51,6 +51,7 @@ struct FiberId(u32);
 struct Fiber<P, R>
 where
     P: RenderPrimitive,
+    R: Renderer<P>,
 {
     id: FiberId,
     body: Option<FiberBody<P, R>>,
@@ -62,6 +63,7 @@ where
 impl<P, R> Fiber<P, R>
 where
     P: RenderPrimitive,
+    R: Renderer<P>,
 {
     fn parent<'a>(&self, arena: &'a Arena<Self>) -> Option<&'a Self> {
         self.parent.and_then(|p| arena.get(p))
@@ -86,12 +88,19 @@ where
         }
     }
 
-    fn native_instance_key(&self) -> Option<&R> {
+    fn native_instance_key(&self) -> Option<&R::InstanceKey> {
         match &self.body {
             Some(FiberBody::Native {
                 native_instance_key,
                 ..
             }) => native_instance_key.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn text_instance_key(&self) -> Option<&R::TextInstanceKey> {
+        match &self.body {
+            Some(FiberBody::Text(_, instance)) => instance.as_ref(),
             _ => None,
         }
     }
@@ -129,6 +138,7 @@ where
 impl<P, R> PartialEq<Fiber<P, R>> for Fiber<P, R>
 where
     P: RenderPrimitive,
+    R: Renderer<P>,
 {
     fn eq(&self, other: &Fiber<P, R>) -> bool {
         self.id == other.id
@@ -138,6 +148,7 @@ where
 impl<'r, P, R> Fiber<P, R>
 where
     P: RenderPrimitive,
+    R: Renderer<P>,
 {
     fn root(id: FiberId) -> Self {
         let body = FiberBody::Root;
@@ -149,6 +160,17 @@ where
             body: Some(body),
         }
     }
+
+    fn text(id: FiberId, text: String) -> Self {
+        Self {
+            id,
+            sibling: None,
+            child: None,
+            parent: None,
+            body: Some(FiberBody::Text(text, None)),
+        }
+    }
+
     fn component(
         id: FiberId,
         instance: Box<dyn AnyComponent<P>>,
@@ -196,8 +218,9 @@ where
         //     .collect::<Vec<_
         match &self.body {
             Some(FiberBody::Root) => {
-                unimplemented!();
+                unimplemented!("root");
             }
+            Some(FiberBody::Text(_, _)) => Ok(vec![]),
             Some(FiberBody::Component {
                 instance, props, ..
             }) => {
@@ -223,8 +246,10 @@ where
 enum FiberBody<P, R>
 where
     P: RenderPrimitive,
+    R: Renderer<P>,
 {
     Root,
+    Text(String, Option<R::TextInstanceKey>),
     Component {
         instance: Box<dyn AnyComponent<P>>,
         state: Box<dyn StoredState>,
@@ -232,7 +257,7 @@ where
     },
     Native {
         instance: P,
-        native_instance_key: Option<R>,
+        native_instance_key: Option<R::InstanceKey>,
         props: P::Props,
     },
 }
@@ -242,6 +267,7 @@ fn process_wrap<P, R>(
 ) -> impl FnMut(&Fiber<P, R>) -> sorcery::Result<Option<ArenaNodeId>>
 where
     P: RenderPrimitive,
+    R: Renderer<P>,
 {
     move |fiber| {
         f(fiber)?;
@@ -254,6 +280,7 @@ fn process_wrap_mut<E, P, R>(
 ) -> impl FnMut(&mut Fiber<P, R>) -> Result<Option<ArenaNodeId>, E>
 where
     P: RenderPrimitive,
+    R: Renderer<P>,
     E: std::error::Error + 'static,
 {
     move |fiber| {
@@ -269,6 +296,7 @@ fn walk_fibers<P, R>(
 ) -> sorcery::Result<()>
 where
     P: RenderPrimitive,
+    R: Renderer<P>,
 {
     let root = start;
     let mut current = start;
@@ -319,6 +347,7 @@ fn walk_fiber_ids<P, R>(
 ) -> sorcery::Result<()>
 where
     P: RenderPrimitive,
+    R: Renderer<P>,
 {
     let root = start;
     let mut current = start;
@@ -362,6 +391,7 @@ fn walk_fibers_mut<E, P, R>(
 ) -> Result<(), E>
 where
     P: RenderPrimitive,
+    R: Renderer<P>,
     E: std::error::Error + 'static,
 {
     let root = start;
@@ -416,9 +446,7 @@ where
         }
     }
 
-    pub fn create_container(&mut self, base: R::Container) -> R::Container {
-        base
-    }
+    pub fn create_container(&mut self, base: &mut R::Container) {}
 
     fn next_fiber_id(&mut self) -> FiberId {
         let id = self.next_fiber_id;
@@ -429,12 +457,16 @@ where
 
     fn build_tree<'a>(
         &mut self,
-        arena: &mut Arena<Fiber<P, R::InstanceKey>>,
+        arena: &mut Arena<Fiber<P, R>>,
         element: &Element<P>,
     ) -> Result<ArenaNodeId, R::Error> {
         debug!("rendering a {:?}\n\n", element);
         let children = element.children();
         let mut fiber = match element {
+            Element::Text(txt) => {
+                let fiber = Fiber::text(self.next_fiber_id(), txt.to_owned());
+                Ok(fiber)
+            }
             Element::Component(comp_element) => {
                 let instance = comp_element.construct().map_err(Error::Sorcery)?;
                 let fiber =
@@ -450,10 +482,11 @@ where
         let id = arena.insert(fiber);
         {
             let to_child = {
-                let mut node = arena.get_mut(id).unwrap();
+                let node = arena.get_mut(id).unwrap();
                 node.render(&children)
                     .map_err(Error::Sorcery)?
                     .into_iter()
+                    .rev()
                     .fold(Result::<_, R::Error>::Ok(None), |prev, next| {
                         let child_id = self.build_tree(arena, &next)?;
                         let mut child = arena.get_mut(child_id).unwrap();
@@ -468,13 +501,13 @@ where
         Ok(id)
     }
 
-    fn root_fiber(&mut self) -> Fiber<P, R::InstanceKey> {
+    fn root_fiber(&mut self) -> Fiber<P, R> {
         Fiber::root(self.next_fiber_id())
     }
 
     pub fn update_container(
         &mut self,
-        ctx: &mut Context<P, R::InstanceKey>,
+        ctx: &mut Context<P, R>,
         container: &mut R::Container,
         element: &Element<P>,
     ) -> Result<(), R::Error> {
@@ -498,14 +531,24 @@ where
             root_id,
             process_wrap_mut(|fiber| {
                 match &mut fiber.body {
+                    Some(FiberBody::Text(txt, ref mut instance_key)) => {
+                        *instance_key = Some(
+                            self.renderer
+                                .create_text_instance(&txt)
+                                .map_err(Error::RendererError)?,
+                        );
+                    }
                     Some(FiberBody::Native {
                         ref mut native_instance_key,
                         instance,
                         props,
                         ..
                     }) => {
-                        *native_instance_key =
-                            Some(self.renderer.create_instance(instance, props)?);
+                        *native_instance_key = Some(
+                            self.renderer
+                                .create_instance(instance, props)
+                                .map_err(Error::RendererError)?,
+                        );
                     }
                     _ => {}
                 };
@@ -514,6 +557,23 @@ where
         )?;
         walk_fibers(&ctx.fibers, root_id, |fiber, id| {
             match &fiber.body {
+                Some(FiberBody::Text(text, Some(text_instance))) => {
+                    let parent = fiber.parent_native(&ctx.fibers);
+                    if parent.as_ref().map_or(false, |p| p.is_native()) {
+                        if parent.as_ref().map_or(false, |p| p.is_root()) {
+                            debug!("append text to container?");
+                        } else if let Some(_) = parent.and_then(|p| p.native_instance_key()) {
+                            debug!("append text ({:?}) to parent", text);
+                            tx.send(Update::AppendTextToParent {
+                                parent: fiber.parent_native_id(&ctx.fibers).unwrap(),
+                                text: *id,
+                            })
+                            .unwrap();
+                            // self.renderer
+                            //     .append_child_to_parent(parent, native_instance);
+                        }
+                    }
+                }
                 Some(FiberBody::Native {
                     native_instance_key: Some(native_instance_key),
                     ..
@@ -522,13 +582,15 @@ where
                     if parent.as_ref().map_or(false, |p| p.is_native()) {
                         if parent.as_ref().map_or(false, |p| p.is_root()) {
                             debug!("append to container");
-                            tx.send(Update::AppendChildToContainer { child: *id });
+                            tx.send(Update::AppendChildToContainer { child: *id })
+                                .unwrap();
                         } else if let Some(_) = parent.and_then(|p| p.native_instance_key()) {
                             debug!("append to child");
                             tx.send(Update::AppendChildToParent {
                                 parent: fiber.parent_native_id(&ctx.fibers).unwrap(),
                                 child: *id,
-                            });
+                            })
+                            .unwrap();
                             // self.renderer
                             //     .append_child_to_parent(parent, native_instance);
                         }
@@ -537,29 +599,43 @@ where
                 _ => {}
             }
             Ok(fiber.child)
-        });
+        })?;
 
         for update in rx.try_iter() {
             match update {
+                Update::AppendTextToParent { parent, text } => {
+                    let parent = ctx.fibers.get(parent).unwrap();
+                    let text = ctx.fibers.get(text).unwrap();
+                    self.renderer
+                        .append_text_to_parent(
+                            parent.native_instance_key().unwrap(),
+                            text.text_instance_key().unwrap(),
+                        )
+                        .map_err(Error::RendererError)?;
+                }
                 Update::AppendChildToContainer { child } => {
-                    let r = self.renderer.append_child_to_container(
-                        container,
-                        ctx.fibers
-                            .get_mut(child)
-                            .unwrap()
-                            .native_instance_key()
-                            .unwrap()
-                            .clone(),
-                    )?;
+                    self.renderer
+                        .append_child_to_container(
+                            container,
+                            ctx.fibers
+                                .get_mut(child)
+                                .unwrap()
+                                .native_instance_key()
+                                .unwrap()
+                                .clone(),
+                        )
+                        .map_err(Error::RendererError)?;
                 }
                 Update::AppendChildToParent { parent, child } => {
                     let (parent, child) = ctx.fibers.get2_mut(parent, child);
                     match (parent, child) {
                         (Some(parent), Some(child)) => {
-                            self.renderer.append_child_to_parent(
-                                parent.native_instance_key().unwrap().clone(),
-                                child.native_instance_key().unwrap().clone(),
-                            )?;
+                            self.renderer
+                                .append_child_to_parent(
+                                    parent.native_instance_key().unwrap(),
+                                    child.native_instance_key().unwrap(),
+                                )
+                                .map_err(Error::RendererError)?;
                         }
                         _ => {
                             warn!("todo");
@@ -577,6 +653,7 @@ where
 pub struct Context<P, R>
 where
     P: RenderPrimitive,
+    R: Renderer<P>,
 {
     fibers: Arena<Fiber<P, R>>,
 }
@@ -584,8 +661,9 @@ where
 impl<'r, P, R> Context<P, R>
 where
     P: RenderPrimitive,
+    R: Renderer<P>,
 {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             fibers: Arena::new(),
         }
@@ -601,6 +679,10 @@ enum Update {
         parent: ArenaNodeId,
         child: ArenaNodeId,
     },
+    AppendTextToParent {
+        parent: ArenaNodeId,
+        text: ArenaNodeId,
+    },
 }
 
 #[derive(Debug)]
@@ -612,21 +694,31 @@ where
 {
     type Error: std::error::Error;
     type Container;
-    type InstanceKey: Clone + std::fmt::Debug;
+    type InstanceKey: std::fmt::Debug;
+    type TextInstanceKey: std::fmt::Debug;
     fn create_instance(
         &mut self,
         ty: &P,
         props: &P::Props,
     ) -> std::result::Result<Self::InstanceKey, Self::Error>;
+    fn create_text_instance(
+        &mut self,
+        text: &str,
+    ) -> std::result::Result<Self::TextInstanceKey, Self::Error>;
     fn append_child_to_container(
         &mut self,
         container: &mut Self::Container,
-        child: Self::InstanceKey,
+        child: &Self::InstanceKey,
+    ) -> std::result::Result<(), Self::Error>;
+    fn append_text_to_parent(
+        &mut self,
+        parent: &Self::InstanceKey,
+        text: &Self::TextInstanceKey,
     ) -> std::result::Result<(), Self::Error>;
     fn append_child_to_parent<'r>(
         &mut self,
-        parent: Self::InstanceKey,
-        child: Self::InstanceKey,
+        parent: &Self::InstanceKey,
+        child: &Self::InstanceKey,
     ) -> std::result::Result<(), Self::Error>;
 }
 
@@ -688,94 +780,103 @@ mod test {
         }
     }
 
-    impl Renderer<Str> for StringRenderer {
-        type Container = StringNode;
-        type InstanceKey = ArenaIndex;
-        type Error = Error;
-        fn create_instance(&mut self, ty: &Str, props: &()) -> Result<Self::InstanceKey, Error> {
-            let node = StringNode {
-                value: ty.0.to_owned(),
-                children: vec![],
-            };
-            let id = self.arena.insert(node);
-            Ok(id)
-        }
+    // impl Renderer<Str> for StringRenderer {
+    //     type Container = StringNode;
+    //     type InstanceKey = ArenaIndex;
+    //     type TextInstanceKey = ArenaIndex;
+    //     type Error = Error;
+    //     fn append_text_to_parent(
+    //         &mut self,
+    //         parent: &Self::InstanceKey,
+    //         text: &Self::TextInstanceKey,
+    //     ) -> std::result::Result<(), Self::Error> {
+    //         Ok(())
+    //     }
+    //     fn create_instance(&mut self, ty: &Str, props: &()) -> Result<Self::InstanceKey, Error> {
+    //         let node = StringNode {
+    //             value: ty.0.to_owned(),
+    //             children: vec![],
+    //         };
+    //         let id = self.arena.insert(node);
+    //         Ok(id)
+    //     }
 
-        fn append_child_to_parent<'r>(
-            &mut self,
-            parent: Self::InstanceKey,
-            child: Self::InstanceKey,
-        ) -> Result<(), Error> {
-            tracing::debug!("append {:?} to {:?}", child, parent);
-            if let Some(p) = self.arena.get_mut(parent) {
-                p.children.push(child);
-            }
-            Ok(())
-        }
+    //     fn append_child_to_parent<'r>(
+    //         &mut self,
+    //         parent: &Self::InstanceKey,
+    //         child: &Self::InstanceKey,
+    //     ) -> Result<(), Error> {
+    //         tracing::debug!("append {:?} to {:?}", child, parent);
+    //         if let Some(p) = self.arena.get_mut(*parent) {
+    //             p.children.push(*child);
+    //         }
+    //         Ok(())
+    //     }
 
-        fn append_child_to_container<'r>(
-            &mut self,
-            container: &'r mut Self::Container,
-            child: Self::InstanceKey,
-        ) -> Result<(), Error> {
-            tracing::debug!("append {:?} to {:?}", child, container);
-            container.children.push(child);
-            Ok(())
-        }
-    }
+    //     fn append_child_to_container<'r>(
+    //         &mut self,
+    //         container: &'r mut Self::Container,
+    //         child: &Self::InstanceKey,
+    //     ) -> Result<(), Error> {
+    //         tracing::debug!("append {:?} to {:?}", child, container);
+    //         container.children.push(*child);
+    //         Ok(())
+    //     }
+    // }
 
-    struct List {}
+    // struct List {}
 
-    impl Component<Str> for List {
-        type Props = ();
+    // impl Component<Str> for List {
+    //     type Props = ();
 
-        fn name(&self) -> String {
-            "List".to_string()
-        }
+    //     fn name(&self) -> String {
+    //         "List".to_string()
+    //     }
 
-        fn new(props: &Self::Props) -> Self {
-            Self {}
-        }
+    //     fn new(props: &Self::Props) -> Self {
+    //         Self {}
+    //     }
 
-        fn render(
-            &self,
-            context: &mut ComponentContext,
-            props: &Self::Props,
-            children: &[Element<Str>],
-        ) -> sorcery::Result<Element<Str>> {
-            let (index, set_index) = use_state(context, 1);
-            Ok(Element::native(
-                None,
-                Str("test".to_string()),
-                (),
-                children.to_vec(),
-            ))
-        }
-    }
-    #[test]
-    fn it_creates_element() {
-        let renderer = StringRenderer::new();
-        let mut reconciler = Reconciler::new(renderer);
-        let mut container = reconciler.create_container(StringNode {
-            value: "".to_owned(),
-            children: vec![],
-        });
-        let component = Element::component::<List>(
-            None,
-            (),
-            vec![Element::native(None, Str("hello".to_string()), (), vec![])],
-        );
-        reconciler
-            .update_container(&mut Context::new(), &mut container, &component)
-            .unwrap();
-        tracing::trace!("UHHH {:?}", container);
+    //     fn render(
+    //         &self,
+    //         context: &mut ComponentContext,
+    //         props: &Self::Props,
+    //         children: &[Element<Str>],
+    //     ) -> sorcery::Result<Element<Str>> {
+    //         let (index, set_index) = use_state(context, 1);
+    //         Ok(Element::native(
+    //             None,
+    //             Str("test".to_string()),
+    //             (),
+    //             children.to_vec(),
+    //         ))
+    //     }
+    // }
+    // #[test]
+    // fn it_creates_element() {
+    //     let renderer = StringRenderer::new();
+    //     let mut reconciler = Reconciler::new(renderer);
+    //     let mut container = StringNode {
+    //         value: "".to_owned(),
+    //         children: vec![],
+    //     };
+    //     reconciler.create_container(&mut container);
+    //     let component = Element::component::<List>(
+    //         None,
+    //         (),
+    //         vec![Element::native(None, Str("hello".to_string()), (), vec![])],
+    //     );
+    //     reconciler
+    //         .update_container(&mut Context::new(), &mut container, &component)
+    //         .unwrap();
+    //     tracing::trace!("UHHH {:?}", container);
 
-        // reconciler
-        //     .update_container(&mut container, &component)
-        //     .unwrap();
-        assert_eq!(
-            "testhello",
-            &container.to_string(&reconciler.renderer().arena)
-        );
-    }
+    //     // reconciler
+    //     //     .update_container(&mut container, &component)
+    //     //     .unwrap();
+    //     assert_eq!(
+    //         "testhello",
+    //         &container.to_string(&reconciler.renderer().arena)
+    //     );
+    // }
 }

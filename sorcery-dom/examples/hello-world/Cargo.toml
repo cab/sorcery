@@ -1,0 +1,25 @@
+[package]
+authors = ["conner bryan <conner@amps.io>"]
+edition = "2018"
+license = "MIT"
+name = "hello-world"
+publish = false
+version = "0.1.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+console_error_panic_hook = "^0.1"
+sorcery = {path = "../../../sorcery"}
+sorcery-dom = {path = "../../"}
+tracing = "0.1"
+tracing-wasm = "^0.1"
+wasm-bindgen = "0.2.68"
+web-sys = {version = "0.3.4", features = [
+  'Document',
+  'Element',
+  'HtmlElement',
+  'Node',
+  'Window',
+]}

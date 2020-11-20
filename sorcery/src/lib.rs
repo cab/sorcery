@@ -6,10 +6,14 @@ use std::{
     fmt::{self, Debug},
 };
 
+pub use sorcery_rsx::rsx;
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("invalid props")]
     InvalidProps,
+    #[error("no such element with name `{0}`")]
+    InvalidNativeName(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -121,10 +125,12 @@ where
 {
     Component(ComponentElement<T>),
     Native(NativeElement<T>),
+    Text(String),
 }
 
 pub trait RenderPrimitive: std::fmt::Debug + Clone {
     type Props: std::fmt::Debug + Default + Clone;
+    fn for_name(name: &str) -> Option<Self>;
     fn render(&self, props: &Self::Props, children: &[Element<Self>])
         -> Result<Vec<Element<Self>>>;
 }
@@ -149,6 +155,16 @@ where
         })
     }
 
+    pub fn native_for_name(
+        key: Option<Key>,
+        name: &str,
+        props: T::Props,
+        children: Vec<Element<T>>,
+    ) -> Result<Self> {
+        let ty = T::for_name(name).ok_or_else(|| Error::InvalidNativeName(name.to_owned()))?;
+        Ok(Self::native(key, ty, props, children))
+    }
+
     pub fn native(key: Option<Key>, ty: T, props: T::Props, children: Vec<Element<T>>) -> Self {
         Element::Native(NativeElement {
             key,
@@ -158,8 +174,13 @@ where
         })
     }
 
+    pub fn text(text: impl Into<String>) -> Self {
+        Element::Text(text.into())
+    }
+
     pub fn children(&self) -> &[Element<T>] {
         match self {
+            Element::Text(_) => &[],
             Element::Component(comp_element) => &comp_element.children,
             Element::Native(native) => &native.children,
         }
@@ -215,7 +236,9 @@ where
     T: RenderPrimitive,
 {
     type Props: StoredProps;
-    fn name(&self) -> String;
+    fn name(&self) -> String {
+        std::any::type_name::<Self>().to_string()
+    }
     fn new(props: &Self::Props) -> Self
     where
         Self: Sized;
