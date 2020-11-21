@@ -43,7 +43,7 @@ impl Component<Html> for App {
 
         Ok(rsx! {
             <div class="test-class" on_click={|e: &()| {
-
+                debug!("clicked from rsx");
             }}>{greeting} " "
                 <span key="blue">
                     <Blue {g} />

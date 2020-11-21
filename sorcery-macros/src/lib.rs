@@ -41,6 +41,20 @@ fn unwrap_option(ty: &Type) -> Option<syn::Type> {
 pub fn derive_props(tokens: TokenStream) -> TokenStream {
     let PropsInput { name, vis, fields } = parse_macro_input!(tokens as PropsInput);
     let builder_name = format_ident!("{}Builder", name);
+    let field_names = fields
+        .iter()
+        .map(|f| f.ident.as_ref().unwrap())
+        .collect::<Vec<_>>();
+    let builder_fields = fields
+        .iter()
+        .map(|f| {
+            let name = f.ident.as_ref().unwrap();
+            let ty = &f.ty;
+            quote! {
+                #name : ::std::option::Option<#ty>
+            }
+        })
+        .collect::<Vec<_>>();
     let field_fns = fields
         .iter()
         .map(|f| {
@@ -50,7 +64,7 @@ pub fn derive_props(tokens: TokenStream) -> TokenStream {
             if let Some(unwrapped) = unwrap_option(ty) {
                 quote! {
                     pub fn #setter_name (&mut self, value: #unwrapped) {
-
+                        self.#name = Some(Some(value));
                     }
                 }
             } else {
@@ -64,7 +78,7 @@ pub fn derive_props(tokens: TokenStream) -> TokenStream {
         .collect::<Vec<_>>();
     let builder = quote! {
         #vis struct #builder_name {
-
+            #(#builder_fields),*
         }
 
         impl #builder_name {
@@ -72,7 +86,9 @@ pub fn derive_props(tokens: TokenStream) -> TokenStream {
             #(#field_fns)*
 
             pub fn build(self) -> #name {
-                unimplemented!("prop builder");
+                #name {
+                    #( #field_names: self.#field_names.unwrap_or(None)),*
+                }
             }
         }
 
@@ -84,7 +100,9 @@ pub fn derive_props(tokens: TokenStream) -> TokenStream {
             type Builder = #builder_name;
 
             fn builder() -> Self::Builder {
-                #builder_name {}
+                #builder_name {
+                    #( #field_names: None ),*
+                }
             }
 
         }

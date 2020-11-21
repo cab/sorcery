@@ -27,50 +27,7 @@ pub struct Html {
     tag: String,
 }
 
-trait StoredCallbackArg: std::any::Any + DynClone {}
-
-dyn_clone::clone_trait_object!(StoredCallbackArg);
-
-impl std::fmt::Debug for dyn StoredCallbackArg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StoredCallbackArg").finish()
-    }
-}
-
-#[derive(Clone)]
-pub enum Prop {
-    Str(String),
-    Callback(std::rc::Rc<dyn Fn(&dyn StoredCallbackArg)>),
-}
-
-impl std::fmt::Debug for Prop {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Prop").finish()
-    }
-}
-
-impl From<String> for Prop {
-    fn from(s: String) -> Self {
-        Prop::Str(s)
-    }
-}
-
-impl From<&str> for Prop {
-    fn from(s: &str) -> Self {
-        Prop::Str(s.to_owned())
-    }
-}
-
-impl<F> From<F> for Prop
-where
-    F: Fn(&dyn StoredCallbackArg) + 'static,
-{
-    fn from(f: F) -> Self {
-        Prop::Callback(std::rc::Rc::new(f))
-    }
-}
-
-#[derive(Props, Clone)]
+#[derive(Props, Debug, Clone)]
 pub struct HtmlProps {
     on_click: Option<Callback>,
     style: Option<String>,
@@ -80,18 +37,18 @@ pub struct HtmlProps {
 #[derive(Clone)]
 pub struct Callback(Arc<dyn Fn(&())>);
 
+impl std::fmt::Debug for Callback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Callback").finish()
+    }
+}
+
 impl<F> From<F> for Callback
 where
     F: Fn(&()) + 'static,
 {
     fn from(f: F) -> Self {
         Callback(Arc::new(f))
-    }
-}
-
-impl std::fmt::Debug for HtmlProps {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HtmlProps").finish()
     }
 }
 
@@ -161,6 +118,8 @@ impl sorcery_reconciler::Renderer<Html> for Renderer {
                     f.0(&());
                 }
             });
+            // TODO we should track this so it drops appropriately
+            on_click.forget();
             // element.add_event_listener_with_callback("click", &Closure::wrap(f))?;
         }
         let id = self.nodes.insert(element.unchecked_into());
