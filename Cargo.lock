@@ -514,7 +514,6 @@ dependencies = [
  "dyn-clone",
  "sorcery-codegen",
  "sorcery-macros",
- "sorcery-rsx",
  "test-env-log",
  "thiserror",
  "tracing",
@@ -572,15 +571,6 @@ dependencies = [
  "thiserror",
  "tracing",
  "tracing-subscriber 0.1.6",
-]
-
-[[package]]
-name = "sorcery-rsx"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]

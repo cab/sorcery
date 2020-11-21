@@ -1,4 +1,7 @@
 extern crate proc_macro;
+
+mod rsx;
+
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use std::collections::HashMap;
@@ -10,6 +13,15 @@ use syn::{
     token, DeriveInput, Expr, Field, GenericArgument, Ident, Path, PathArguments, Result, Token,
     Type, Visibility,
 };
+
+#[cfg(feature = "rsx")]
+use rsx::rsx_impl;
+
+#[cfg(feature = "rsx")]
+#[proc_macro]
+pub fn rsx(tokens: TokenStream) -> TokenStream {
+    rsx_impl(tokens)
+}
 
 fn unwrap_option(ty: &Type) -> Option<syn::Type> {
     fn path_is_option(path: &Path) -> bool {

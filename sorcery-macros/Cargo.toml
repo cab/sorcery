@@ -6,6 +6,10 @@ license = "MIT"
 name = "sorcery-macros"
 version = "0.1.0"
 
+[features]
+default = ["rsx"]
+rsx = []
+
 [lib]
 proc-macro = true
 

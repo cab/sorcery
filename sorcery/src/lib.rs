@@ -8,8 +8,7 @@ use std::{
     fmt::{self, Debug},
 };
 
-pub use sorcery_macros::Props;
-pub use sorcery_rsx::rsx;
+pub use sorcery_macros::{rsx, Props};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {

@@ -1,4 +1,3 @@
-extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::{quote, format_ident};
 use std::collections::HashMap;
@@ -24,8 +23,9 @@ fn expand_props(builder: Expr, props: &HashMap<Ident, Expr>) -> proc_macro2::Tok
     }
 }
 
-#[proc_macro]
-pub fn rsx(tokens: TokenStream) -> TokenStream {
+
+
+pub fn rsx_impl(tokens: TokenStream) -> TokenStream {
     let element = parse_macro_input!(tokens as Element);
     let result = element.walk(&Walker::new(
         |element, children| {
