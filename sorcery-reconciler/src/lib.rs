@@ -1,9 +1,5 @@
 use crossbeam_channel as channel;
 use generational_arena::{Arena, Index as ArenaNodeId};
-use std::{
-    cell::{Ref, RefCell, RefMut},
-    sync::Arc,
-};
 use tracing::{debug, trace, warn};
 
 use sorcery::{
@@ -516,7 +512,7 @@ where
         element: &Element<P>,
     ) -> Result<(), R::Error> {
         let root_id = {
-            let node_id = self.build_tree(&mut ctx.fibers_mut(), element)?;
+            let node_id = self.build_tree(&mut ctx.fibers, element)?;
             let mut root_fiber = Fiber {
                 body: Some(FiberBody::Root),
                 id: self.next_fiber_id(),
@@ -525,13 +521,13 @@ where
                 sibling: None,
             };
             root_fiber.child = Some(node_id);
-            let root_id = ctx.fibers_mut().insert(root_fiber);
-            ctx.fibers_mut().get_mut(node_id).unwrap().parent = Some(root_id);
+            let root_id = ctx.fibers.insert(root_fiber);
+            ctx.fibers.get_mut(node_id).unwrap().parent = Some(root_id);
             root_id
         };
         let (tx, rx) = channel::unbounded::<Update>();
         walk_fibers_mut(
-            &mut ctx.fibers_mut(),
+            &mut ctx.fibers,
             root_id,
             process_wrap_mut(|fiber| {
                 match &mut fiber.body {
@@ -559,18 +555,17 @@ where
                 Ok(())
             }),
         )?;
-        walk_fibers(&ctx.fibers(), root_id, |fiber, id| {
+        walk_fibers(&ctx.fibers, root_id, |fiber, id| {
             match &fiber.body {
                 Some(FiberBody::Text(text, Some(text_instance))) => {
-                    let fibers = ctx.fibers();
-                    let parent = fiber.parent_native(&fibers);
+                    let parent = fiber.parent_native(&ctx.fibers);
                     if parent.as_ref().map_or(false, |p| p.is_native()) {
                         if parent.as_ref().map_or(false, |p| p.is_root()) {
                             debug!("append text to container?");
                         } else if let Some(_) = parent.and_then(|p| p.native_instance_key()) {
                             debug!("append text ({:?}) to parent", text);
                             tx.send(Update::AppendTextToParent {
-                                parent: fiber.parent_native_id(&ctx.fibers()).unwrap(),
+                                parent: fiber.parent_native_id(&ctx.fibers).unwrap(),
                                 text: *id,
                             })
                             .unwrap();
@@ -583,8 +578,7 @@ where
                     native_instance_key: Some(native_instance_key),
                     ..
                 }) => {
-                    let fibers = ctx.fibers();
-                    let parent = fiber.parent_native(&fibers);
+                    let parent = fiber.parent_native(&ctx.fibers);
                     if parent.as_ref().map_or(false, |p| p.is_native()) {
                         if parent.as_ref().map_or(false, |p| p.is_root()) {
                             debug!("append to container");
@@ -593,7 +587,7 @@ where
                         } else if let Some(_) = parent.and_then(|p| p.native_instance_key()) {
                             debug!("append to child");
                             tx.send(Update::AppendChildToParent {
-                                parent: fiber.parent_native_id(&ctx.fibers()).unwrap(),
+                                parent: fiber.parent_native_id(&ctx.fibers).unwrap(),
                                 child: *id,
                             })
                             .unwrap();
@@ -610,9 +604,8 @@ where
         for update in rx.try_iter() {
             match update {
                 Update::AppendTextToParent { parent, text } => {
-                    let fibers = ctx.fibers();
-                    let parent = fibers.get(parent).unwrap();
-                    let text = fibers.get(text).unwrap();
+                    let parent = ctx.fibers.get(parent).unwrap();
+                    let text = ctx.fibers.get(text).unwrap();
                     self.renderer
                         .append_text_to_parent(
                             parent.native_instance_key().unwrap(),
@@ -624,7 +617,7 @@ where
                     self.renderer
                         .append_child_to_container(
                             container,
-                            ctx.fibers_mut()
+                            ctx.fibers
                                 .get_mut(child)
                                 .unwrap()
                                 .native_instance_key()
@@ -634,8 +627,7 @@ where
                         .map_err(Error::RendererError)?;
                 }
                 Update::AppendChildToParent { parent, child } => {
-                    let mut fibers = ctx.fibers_mut();
-                    let (parent, child) = fibers.get2_mut(parent, child);
+                    let (parent, child) = ctx.fibers.get2_mut(parent, child);
                     match (parent, child) {
                         (Some(parent), Some(child)) => {
                             self.renderer
@@ -663,38 +655,10 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    inner: Arc<RefCell<ContextInner<P, R>>>,
-}
-
-impl<'r, P, R> Context<P, R>
-where
-    P: RenderPrimitive,
-    R: Renderer<P>,
-{
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(RefCell::new(ContextInner::new())),
-        }
-    }
-
-    fn fibers(&self) -> impl std::ops::Deref<Target = Arena<Fiber<P, R>>> + '_ {
-        Ref::map(self.inner.borrow(), |i| &i.fibers)
-    }
-
-    fn fibers_mut(&self) -> impl std::ops::DerefMut<Target = Arena<Fiber<P, R>>> + '_ {
-        RefMut::map(self.inner.borrow_mut(), |i| &mut i.fibers)
-    }
-}
-
-pub struct ContextInner<P, R>
-where
-    P: RenderPrimitive,
-    R: Renderer<P>,
-{
     fibers: Arena<Fiber<P, R>>,
 }
 
-impl<'r, P, R> ContextInner<P, R>
+impl<'r, P, R> Context<P, R>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
