@@ -1,3 +1,5 @@
+#![feature(associated_type_defaults)]
+
 use dyn_clone::DynClone;
 pub use sorcery_codegen::component;
 use std::{
@@ -135,10 +137,13 @@ pub trait Props {
 }
 
 pub trait RenderPrimitive: std::fmt::Debug + Clone {
-    type Props<'a>: Props + std::fmt::Debug + Clone;
+    type Props: Props + std::fmt::Debug + Clone;
     fn for_name(name: &str) -> Option<Self>;
-    fn render(&self, props: &Self::Props, children: &[Element<Self>])
-        -> Result<Vec<Element<Self>>>;
+    fn render<'r>(
+        &self,
+        props: &'r Self::Props,
+        children: &[Element<Self>],
+    ) -> Result<Vec<Element<Self>>>;
 }
 
 impl<T> Element<T>
@@ -159,6 +164,10 @@ where
             props: Box::new(props),
             children,
         })
+    }
+
+    pub fn props_builder() -> <<T as RenderPrimitive>::Props as Props>::Builder {
+        T::Props::builder()
     }
 
     pub fn native_for_name(
@@ -223,6 +232,7 @@ where
     T: RenderPrimitive,
 {
     type Props: StoredProps;
+    type __Primitive = T;
     fn name(&self) -> String {
         std::any::type_name::<Self>().to_string()
     }

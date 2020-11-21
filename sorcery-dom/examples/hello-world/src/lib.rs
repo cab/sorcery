@@ -42,7 +42,7 @@ impl Component<Html> for App {
         let g = "world";
 
         Ok(rsx! {
-            <div class="test-class" onClick={|e: ()| {
+            <div class="test-class" on_click={|e: &()| {
 
             }}>{greeting} " "
                 <span key="blue">

@@ -1,8 +1,9 @@
 use dyn_clone::DynClone;
 use generational_arena::{Arena, Index as ArenaIndex};
+use gloo::{events::EventListener, timers::callback::Timeout};
 use sorcery::{Props, RenderPrimitive, StoredProps};
 use sorcery_reconciler::Reconciler;
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, trace, warn};
 use wasm_bindgen::{prelude::*, JsCast};
 use web_sys::{Document, Element, HtmlElement, Node};
@@ -70,11 +71,25 @@ where
 }
 
 #[derive(Props, Clone)]
-struct HtmlProps<'a> {
-    on_click: &'a dyn Fn(),
+pub struct HtmlProps {
+    on_click: Option<Callback>,
+    style: Option<String>,
+    class: Option<String>,
 }
 
-impl<'a> std::fmt::Debug for HtmlProps<'a> {
+#[derive(Clone)]
+pub struct Callback(Arc<dyn Fn(&())>);
+
+impl<F> From<F> for Callback
+where
+    F: Fn(&()) + 'static,
+{
+    fn from(f: F) -> Self {
+        Callback(Arc::new(f))
+    }
+}
+
+impl std::fmt::Debug for HtmlProps {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HtmlProps").finish()
     }
@@ -138,17 +153,15 @@ impl sorcery_reconciler::Renderer<Html> for Renderer {
         props: &<Html as RenderPrimitive>::Props,
     ) -> Result<Self::InstanceKey> {
         let element = self.document.create_element(&ty.tag)?;
-        for (k, v) in props {
-            match v {
-                Prop::Str(s) => element.set_attribute(k, s)?,
-                Prop::Callback(cb) => match k.as_str() {
-                    // "onClick" => element.add_event_listener_with_callback(
-                    //     "click",
-                    //     Closure::wrap(cb.downcast_ref()),
-                    // ),
-                    _ => panic!(),
-                },
-            }
+        if let Some(f) = &props.on_click {
+            let on_click = EventListener::new(&element, "click", {
+                let f = f.clone();
+                move |_event| {
+                    debug!("clicked!");
+                    f.0(&());
+                }
+            });
+            // element.add_event_listener_with_callback("click", &Closure::wrap(f))?;
         }
         let id = self.nodes.insert(element.unchecked_into());
         Ok(id)

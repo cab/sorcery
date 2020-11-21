@@ -10,6 +10,7 @@ version = "0.1.0"
 crossbeam-channel = "^0.5"
 dyn-clone = "^1.0"
 generational-arena = "0.2.8"
+gloo = "0.2.1"
 sorcery = {path = "../sorcery"}
 sorcery-reconciler = {path = "../sorcery-reconciler"}
 thiserror = "^1.0"

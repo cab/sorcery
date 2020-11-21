@@ -2,28 +2,22 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::{quote, format_ident};
 use std::collections::HashMap;
-use syn::{
-    braced,
-    parse::{Parse, ParseStream},
-    parse_macro_input,
-    punctuated::Punctuated,
-    token, Expr, Field, Ident, Result, Token,
-};
+use syn::{Expr, Field, Ident, Result, Token, braced, parse::{Parse, ParseStream}, parse_macro_input, punctuated::Punctuated, parse_quote, token};
 
-fn expand_props(props: &HashMap<Ident, Expr>) -> proc_macro2::TokenStream {
+fn expand_props(builder: Expr, props: &HashMap<Ident, Expr>) -> proc_macro2::TokenStream {
     let pairs = props
         .iter()
         .map(|(k, v)| {
             let key = k.to_string();
             let setter = format_ident!("set_{}", key);
             quote! {
-                props. #setter ((#v).into());
+                builder. #setter ((#v).into());
             }
         })
         .collect::<Vec<_>>();
     quote! {
         {
-            let mut builder = <Self::Primitive as sorcery::RenderPrimitive>::Props::new();
+            let mut builder = #builder;
             #(#pairs)*
             builder.build()
         }
@@ -38,24 +32,31 @@ pub fn rsx(tokens: TokenStream) -> TokenStream {
             let tag = &element.tag;
             let tag_name = element.tag.to_string();
             let first_char = tag_name.chars().next().unwrap();
-            let props = if let Some(direct) = &element.direct_props {
-                quote!{ #direct }
-            } else { 
-                expand_props(&element.props)
-            };
             let key = if let Some(key) = &element.key {
                 quote! { Some(#key.into()) }
             } else {
                 quote!{ None }
             };
             if first_char.is_lowercase() {
+                let props = if let Some(direct) = &element.direct_props {
+                    quote!{ (#direct).into() }
+                } else { 
+                    expand_props(parse_quote! {
+                        sorcery::Element::<Self::__Primitive>::props_builder()
+                    }, &element.props)
+                };
                 // native element
                 quote! {
-                    sorcery::Element::native_for_name(#key, #tag_name, std::convert::TryInto::try_into(#props).map_err(|_| sorcery::Error::InvalidProps)?, vec![#(#children),*])?
+                    sorcery::Element::native_for_name(#key, #tag_name, #props, vec![#(#children),*])?
                 }
             } else {
+                let props = if let Some(direct) = &element.direct_props {
+                    quote!{ (#direct).into() }
+                } else { 
+                    expand_props(syn::parse_str("x").unwrap() ,&element.props)
+                };
                 quote! {
-                    sorcery::Element::component::<#tag>(#key, std::convert::TryInto::try_into(#props).map_err(|_| sorcery::Error::InvalidProps)?, vec![#(#children),*])
+                    sorcery::Element::component::<#tag>(#key, #props, vec![#(#children),*])
                 }
             }
         },
