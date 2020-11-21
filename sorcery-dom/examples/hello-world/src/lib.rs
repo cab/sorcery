@@ -1,5 +1,5 @@
 use sorcery::{rsx, use_state, Component, ComponentContext, Element};
-use sorcery_dom::{render, Html};
+use sorcery_dom::{render, ClickEvent, Html};
 use tracing::debug;
 use wasm_bindgen::prelude::*;
 
@@ -42,8 +42,8 @@ impl Component<Html> for App {
         let g = "world";
 
         Ok(rsx! {
-            <div class="test-class" on_click={|e: &()| {
-                debug!("clicked from rsx");
+            <div class="test-class" on_click={move |e: &ClickEvent| {
+                debug!("clicked from rsx ({:?}): {:?}", g, e.native);
             }}>{greeting} " "
                 <span key="blue">
                     <Blue {g} />

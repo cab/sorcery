@@ -29,23 +29,23 @@ pub struct Html {
 
 #[derive(Props, Debug, Clone)]
 pub struct HtmlProps {
-    on_click: Option<Callback>,
+    on_click: Option<Callback<ClickEvent>>,
     style: Option<String>,
     class: Option<String>,
 }
 
 #[derive(Clone)]
-pub struct Callback(Arc<dyn Fn(&())>);
+pub struct Callback<A>(Arc<dyn Fn(&A)>);
 
-impl std::fmt::Debug for Callback {
+impl<A> std::fmt::Debug for Callback<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Callback").finish()
     }
 }
 
-impl<F> From<F> for Callback
+impl<F, A> From<F> for Callback<A>
 where
-    F: Fn(&()) + 'static,
+    F: Fn(&A) + 'static,
 {
     fn from(f: F) -> Self {
         Callback(Arc::new(f))
@@ -98,6 +98,11 @@ pub fn render(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub struct ClickEvent {
+    pub native: web_sys::MouseEvent,
+}
+
 impl sorcery_reconciler::Renderer<Html> for Renderer {
     type Container = Element;
     type InstanceKey = ArenaIndex;
@@ -113,9 +118,13 @@ impl sorcery_reconciler::Renderer<Html> for Renderer {
         if let Some(f) = &props.on_click {
             let on_click = EventListener::new(&element, "click", {
                 let f = f.clone();
-                move |_event| {
+                move |event| {
+                    let event = event
+                        .clone()
+                        .dyn_into::<web_sys::MouseEvent>()
+                        .unwrap_throw();
                     debug!("clicked!");
-                    f.0(&());
+                    f.0(&ClickEvent { native: event });
                 }
             });
             // TODO we should track this so it drops appropriately
