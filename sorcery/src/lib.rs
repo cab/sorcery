@@ -208,7 +208,6 @@ pub struct ComponentContext {
     state_pointer: usize,
     state: Vec<HookState>,
     context: Box<dyn ComponentUpdateContext>,
-    tx: channel::Sender<ComponentUpdate>,
 }
 
 impl fmt::Debug for ComponentContext {
@@ -262,14 +261,13 @@ impl<S: 'static + PartialEq> Dep for S {
 }
 
 impl ComponentContext {
-    pub fn new<I>(tx: channel::Sender<ComponentUpdate>, context: I) -> Self
+    pub fn new<I>(context: I) -> Self
     where
         I: ComponentUpdateContext,
     {
         Self {
             state: vec![],
             state_pointer: 0,
-            tx,
             context: Box::new(context),
         }
     }
@@ -289,15 +287,14 @@ impl ComponentContext {
         debug!("state called");
         let pointer = self.state_pointer;
         let result = (initial, {
-            let tx = self.tx.clone();
             let ctx = self.context.clone();
             move |e: T| {
                 debug!("updating state for {:?}", std::any::type_name::<T>());
-                tx.send(ComponentUpdate::SetState {
-                    pointer,
-                    context: ctx.clone(),
-                })
-                .expect("todo");
+                // tx.send(ComponentUpdate::SetState {
+                //     pointer,
+                //     context: ctx.clone(),
+                // })
+                // .expect("todo");
             }
         });
         self.increment_pointer();

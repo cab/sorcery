@@ -112,6 +112,9 @@ pub fn render(
     reconciler.create_container(container);
     let mut ctx = sorcery_reconciler::Context::new();
     reconciler.update_container(&mut ctx, container, element)?;
+    wasm_bindgen_futures::spawn_local(async move {
+        reconciler.run().await;
+    });
     Ok(())
 }
 

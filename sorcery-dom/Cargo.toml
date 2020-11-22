@@ -16,6 +16,7 @@ sorcery-reconciler = {path = "../sorcery-reconciler"}
 thiserror = "^1.0"
 tracing = "0.1"
 wasm-bindgen = "0.2.68"
+wasm-bindgen-futures = "0.4.18"
 web-sys = {version = "0.3.4", features = [
   'Document',
   'Element',
