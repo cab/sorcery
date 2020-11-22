@@ -2,8 +2,8 @@ use dyn_clone::DynClone;
 use generational_arena::{Arena, Index as ArenaIndex};
 use gloo::{events::EventListener, timers::callback::Timeout};
 use sorcery::{Props, RenderPrimitive, StoredProps};
-use sorcery_reconciler::Reconciler;
-use std::{collections::HashMap, sync::Arc};
+use sorcery_reconciler::{Reconciler, Task};
+use std::{cell::RefCell, collections::HashMap, sync::Arc};
 use tracing::{debug, trace, warn};
 use wasm_bindgen::{prelude::*, JsCast};
 use web_sys::{Document, Element, HtmlElement, Node};
@@ -74,6 +74,7 @@ impl RenderPrimitive for Html {
 struct Renderer {
     nodes: Arena<Node>,
     document: Document,
+    listeners: Vec<EventListener>,
 }
 
 impl Renderer {
@@ -81,7 +82,23 @@ impl Renderer {
         Self {
             document,
             nodes: Arena::new(),
+            listeners: vec![],
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HtmlContext {}
+
+impl Default for HtmlContext {
+    fn default() -> Self {
+        Self {}
+    }
+}
+
+impl sorcery_reconciler::RendererContext for HtmlContext {
+    fn context_for() -> Self {
+        Self {}
     }
 }
 
@@ -109,6 +126,18 @@ impl sorcery_reconciler::Renderer<Html> for Renderer {
     type TextInstanceKey = ArenaIndex;
     type Error = Error;
 
+    fn schedule_task(&self, task: Box<dyn Task>) {
+        web_sys::window()
+            .unwrap()
+            .request_idle_callback(
+                Closure::once_into_js(move || {
+                    task.run();
+                })
+                .unchecked_ref(),
+            )
+            .unwrap();
+    }
+
     fn create_instance(
         &mut self,
         ty: &Html,
@@ -127,8 +156,11 @@ impl sorcery_reconciler::Renderer<Html> for Renderer {
                     f.0(&ClickEvent { native: event });
                 }
             });
+
+            self.listeners.push(on_click);
+
             // TODO we should track this so it drops appropriately
-            on_click.forget();
+            // on_click.forget();
             // element.add_event_listener_with_callback("click", &Closure::wrap(f))?;
         }
         let id = self.nodes.insert(element.unchecked_into());

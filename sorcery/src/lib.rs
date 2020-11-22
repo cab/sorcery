@@ -1,5 +1,6 @@
 #![feature(associated_type_defaults)]
 
+use crossbeam_channel as channel;
 use dyn_clone::DynClone;
 pub use sorcery_codegen::component;
 use std::{
@@ -7,6 +8,7 @@ use std::{
     collections::HashMap,
     fmt::{self, Debug},
 };
+use tracing::debug;
 
 pub use sorcery_macros::{rsx, Props};
 
@@ -67,20 +69,20 @@ where
 }
 
 #[derive(Clone)]
-pub struct ComponentElement<T, O>
+pub struct ComponentElement<T>
 where
-    T: RenderPrimitive<O>,
+    T: RenderPrimitive,
 {
     name: Option<String>,
     key: Option<Key>,
-    constructor: fn(&dyn StoredProps) -> Result<Box<dyn AnyComponent<T, O>>>,
+    constructor: fn(&dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>,
     props: Box<dyn StoredProps>,
-    children: Vec<Element<T, O>>,
+    children: Vec<Element<T>>,
 }
 
-impl<T, O> Debug for ComponentElement<T, O>
+impl<T> Debug for ComponentElement<T>
 where
-    T: RenderPrimitive<O>,
+    T: RenderPrimitive,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ComponentElement")
@@ -89,11 +91,11 @@ where
     }
 }
 
-impl<T, O> ComponentElement<T, O>
+impl<T> ComponentElement<T>
 where
-    T: RenderPrimitive<O>,
+    T: RenderPrimitive,
 {
-    pub fn construct(&self) -> Result<Box<dyn AnyComponent<T, O>>> {
+    pub fn construct(&self) -> Result<Box<dyn AnyComponent<T>>> {
         (self.constructor)(self.props.as_ref())
     }
 
@@ -107,26 +109,26 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub struct NativeElement<T, O>
+pub struct NativeElement<T>
 where
-    T: RenderPrimitive<O> + std::fmt::Debug,
+    T: RenderPrimitive + std::fmt::Debug,
 {
     pub key: Option<Key>,
     pub ty: T,
     pub props: T::Props,
-    pub children: Vec<Element<T, O>>,
+    pub children: Vec<Element<T>>,
 }
 
 #[derive(Debug, Hash, PartialOrd, PartialEq, Ord, Eq)]
 pub(crate) struct ElementId(u32);
 
 #[derive(Debug, Clone)]
-pub enum Element<T, O>
+pub enum Element<T>
 where
-    T: RenderPrimitive<O>,
+    T: RenderPrimitive,
 {
-    Component(ComponentElement<T, O>),
-    Native(NativeElement<T, O>),
+    Component(ComponentElement<T>),
+    Native(NativeElement<T>),
     Text(String),
 }
 
@@ -135,26 +137,26 @@ pub trait Props {
     fn builder() -> Self::Builder;
 }
 
-pub trait RenderPrimitive<O>: std::fmt::Debug + Clone {
+pub trait RenderPrimitive: std::fmt::Debug + Clone {
     type Props: Props + std::fmt::Debug + Clone;
     fn for_name(name: &str) -> Option<Self>;
     fn render<'r>(
         &self,
         props: &'r Self::Props,
-        children: &[Element<Self, O>],
-    ) -> Result<Vec<Element<Self, O>>>;
+        children: &[Element<Self>],
+    ) -> Result<Vec<Element<Self>>>;
 }
 
-impl<T, O> Element<T, O>
+impl<T> Element<T>
 where
-    T: RenderPrimitive<O>,
+    T: RenderPrimitive,
 {
-    pub fn component<C>(key: Option<Key>, props: C::Props, children: Vec<Element<T, O>>) -> Self
+    pub fn component<C>(key: Option<Key>, props: C::Props, children: Vec<Element<T>>) -> Self
     where
-        C: Component<T, O> + 'static,
+        C: Component<T> + 'static,
         T: 'static,
     {
-        let constructor = |props: &dyn StoredProps| <C as AnyComponent<T, O>>::new(props);
+        let constructor = |props: &dyn StoredProps| <C as AnyComponent<T>>::new(props);
         let name = std::any::type_name::<C>();
         Element::Component(ComponentElement {
             key,
@@ -165,7 +167,7 @@ where
         })
     }
 
-    pub fn props_builder() -> <<T as RenderPrimitive<O>>::Props as Props>::Builder {
+    pub fn props_builder() -> <<T as RenderPrimitive>::Props as Props>::Builder {
         T::Props::builder()
     }
 
@@ -173,13 +175,13 @@ where
         key: Option<Key>,
         name: &str,
         props: T::Props,
-        children: Vec<Element<T, O>>,
+        children: Vec<Element<T>>,
     ) -> Result<Self> {
         let ty = T::for_name(name).ok_or_else(|| Error::InvalidNativeName(name.to_owned()))?;
         Ok(Self::native(key, ty, props, children))
     }
 
-    pub fn native(key: Option<Key>, ty: T, props: T::Props, children: Vec<Element<T, O>>) -> Self {
+    pub fn native(key: Option<Key>, ty: T, props: T::Props, children: Vec<Element<T>>) -> Self {
         Element::Native(NativeElement {
             key,
             ty,
@@ -192,7 +194,7 @@ where
         Element::Text(text.into())
     }
 
-    pub fn children(&self) -> &[Element<T, O>] {
+    pub fn children(&self) -> &[Element<T>] {
         match self {
             Element::Text(_) => &[],
             Element::Component(comp_element) => &comp_element.children,
@@ -201,118 +203,25 @@ where
     }
 }
 
-pub trait AnyComponent<T, O>
-where
-    T: RenderPrimitive<O>,
-{
-    fn name(&self) -> String;
-    fn new(props: &dyn StoredProps) -> Result<Box<dyn AnyComponent<T, O>>>
-    where
-        Self: Sized;
-    fn render(
-        &self,
-        context: &mut O,
-        props: &dyn StoredProps,
-        children: &[Element<T, O>],
-    ) -> Result<Element<T, O>>;
+#[derive()]
+pub struct ComponentContext {
+    state_pointer: usize,
+    state: Vec<HookState>,
+    tx: channel::Sender<ComponentUpdate>,
 }
 
-impl<P, O> Debug for dyn AnyComponent<P, O>
-where
-    P: RenderPrimitive<O>,
-{
+impl fmt::Debug for ComponentContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!("AnyComponent({})", self.name()))
+        f.debug_struct("ComponentContext.TODO").finish()
     }
 }
 
-pub trait Component<T, O>
-where
-    T: RenderPrimitive<O>,
-{
-    type Props: StoredProps;
-    type __Primitive = T;
-    fn name(&self) -> String {
-        std::any::type_name::<Self>().to_string()
-    }
-    fn new(props: &Self::Props) -> Self
-    where
-        Self: Sized;
-    fn render(
-        &self,
-        context: &mut O,
-        props: &Self::Props,
-        children: &[Element<T, O>],
-    ) -> Result<Element<T, O>>;
+#[derive(Debug)]
+pub enum ComponentUpdate {
+    SetState { pointer: usize },
 }
 
-impl<C, P, T, O> AnyComponent<T, O> for C
-where
-    C: Component<T, O, Props = P> + 'static,
-    P: 'static,
-    T: RenderPrimitive<O>,
-{
-    fn name(&self) -> String {
-        C::name(self)
-    }
-
-    fn new(props: &dyn StoredProps) -> Result<Box<dyn AnyComponent<T, O>>>
-    where
-        Self: Sized,
-    {
-        let props = props.any().downcast_ref::<P>().ok_or(Error::InvalidProps)?;
-        Ok(Box::new(C::new(props)) as Box<dyn AnyComponent<T, O>>)
-    }
-
-    fn render(
-        &self,
-        context: &mut O,
-        props: &dyn StoredProps,
-        children: &[Element<T, O>],
-    ) -> Result<Element<T, O>> {
-        let props = props.any().downcast_ref::<P>().ok_or(Error::InvalidProps)?;
-        C::render(self, context, props, children)
-    }
-}
-
-fn as_any<C, T, O>(component: C) -> Box<dyn AnyComponent<T, O>>
-where
-    C: Component<T, O> + 'static,
-    T: RenderPrimitive<O>,
-    O: ComponentContext,
-{
-    Box::new(component)
-}
-
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct ComponentId(u32);
-
-impl From<u32> for ComponentId {
-    fn from(id: u32) -> Self {
-        Self(id)
-    }
-}
-
-pub trait StateUpdater<T>: Fn(T) + Send + Sync {}
-
-pub trait ComponentContext {
-    fn register_state_hook<T>(&mut self, initial: T) -> (T, Box<dyn StateUpdater<T>>);
-}
-
-pub fn use_state<O, T>(context: &mut O, initial: T) -> (T, impl Fn(T) + Send + Sync)
-where
-    T: Any,
-    O: ComponentContext,
-{
-    context.register_state_hook(initial)
-}
-
-pub fn use_effect<O>(context: &mut O, f: impl Fn())
-where
-    O: ComponentContext,
-{
-}
-
+#[derive()]
 enum HookState {
     State(Box<dyn Any>),
     Effect(Vec<Box<dyn Dep>>),
@@ -335,6 +244,138 @@ impl<S: 'static + PartialEq> Dep for S {
             .map_or(false, |a| self == a)
     }
 }
+
+impl ComponentContext {
+    pub fn new(tx: channel::Sender<ComponentUpdate>) -> Self {
+        Self {
+            state: vec![],
+            state_pointer: 0,
+            tx,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.state_pointer = 0;
+    }
+
+    fn increment_pointer(&mut self) {
+        self.state_pointer += 1;
+    }
+
+    fn state<T>(&mut self, initial: T) -> (T, impl Fn(T) + Sync + Send + Clone)
+    where
+        T: Sync + Send,
+    {
+        debug!("state called");
+        let pointer = self.state_pointer;
+        let result = (initial, {
+            let tx = self.tx.clone();
+            move |e: T| {
+                debug!("updating state for {:?}", std::any::type_name::<T>());
+                tx.send(ComponentUpdate::SetState { pointer })
+                    .expect("todo");
+            }
+        });
+        self.increment_pointer();
+        result
+    }
+}
+
+pub trait AnyComponent<T>
+where
+    T: RenderPrimitive,
+{
+    fn name(&self) -> String;
+    fn new(props: &dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>
+    where
+        Self: Sized;
+    fn render(
+        &self,
+        context: &mut ComponentContext,
+        props: &dyn StoredProps,
+        children: &[Element<T>],
+    ) -> Result<Element<T>>;
+}
+
+impl<P> Debug for dyn AnyComponent<P>
+where
+    P: RenderPrimitive,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!("AnyComponent({})", self.name()))
+    }
+}
+
+pub trait Component<T>
+where
+    T: RenderPrimitive,
+{
+    type Props: StoredProps;
+    type __Primitive = T;
+    fn name(&self) -> String {
+        std::any::type_name::<Self>().to_string()
+    }
+    fn new(props: &Self::Props) -> Self
+    where
+        Self: Sized;
+    fn render(
+        &self,
+        context: &mut ComponentContext,
+        props: &Self::Props,
+        children: &[Element<T>],
+    ) -> Result<Element<T>>;
+}
+
+impl<C, P, T> AnyComponent<T> for C
+where
+    C: Component<T, Props = P> + 'static,
+    P: 'static,
+    T: RenderPrimitive,
+{
+    fn name(&self) -> String {
+        C::name(self)
+    }
+
+    fn new(props: &dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>
+    where
+        Self: Sized,
+    {
+        let props = props.any().downcast_ref::<P>().ok_or(Error::InvalidProps)?;
+        Ok(Box::new(C::new(props)) as Box<dyn AnyComponent<T>>)
+    }
+
+    fn render(
+        &self,
+        context: &mut ComponentContext,
+        props: &dyn StoredProps,
+        children: &[Element<T>],
+    ) -> Result<Element<T>> {
+        let props = props.any().downcast_ref::<P>().ok_or(Error::InvalidProps)?;
+        C::render(self, context, props, children)
+    }
+}
+
+#[derive(Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct ComponentId(u32);
+
+impl From<u32> for ComponentId {
+    fn from(id: u32) -> Self {
+        Self(id)
+    }
+}
+
+pub trait StateUpdater<T>: Fn(T) + Send + Sync {}
+
+impl<F, T> StateUpdater<T> for F where F: Fn(T) + Send + Sync {}
+
+pub fn use_state<T>(context: &mut ComponentContext, initial: T) -> (T, impl Fn(T) + Send + Sync)
+where
+    T: Any + Sync + Send,
+{
+    context.state(initial)
+}
+
+pub fn use_effect(context: &mut ComponentContext, f: impl Fn()) {}
 
 #[cfg(test)]
 mod test {

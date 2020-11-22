@@ -1,5 +1,7 @@
 use crossbeam_channel as channel;
 use generational_arena::{Arena, Index as ArenaNodeId};
+use sorcery::ComponentUpdate;
+use std::marker::PhantomData;
 use tracing::{debug, trace, warn};
 
 use sorcery::{
@@ -8,7 +10,9 @@ use sorcery::{
 };
 use std::{
     any::Any,
+    cell::RefCell,
     collections::{HashMap, VecDeque},
+    sync::Arc,
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -31,7 +35,7 @@ where
 {
     next_fiber_id: u32,
     element_type: std::marker::PhantomData<P>,
-    renderer: R,
+    renderer: Arc<RefCell<R>>,
 }
 
 impl<P, R> Reconciler<P, R>
@@ -39,8 +43,8 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    fn renderer(&self) -> &R {
-        &self.renderer
+    fn renderer(&self) -> Arc<RefCell<R>> {
+        self.renderer.clone()
     }
 }
 
@@ -54,6 +58,7 @@ where
     R: Renderer<P>,
 {
     id: FiberId,
+    context: sorcery::ComponentContext,
     body: Option<FiberBody<P, R>>,
     sibling: Option<ArenaNodeId>,
     child: Option<ArenaNodeId>,
@@ -150,19 +155,9 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    fn root(id: FiberId) -> Self {
-        let body = FiberBody::Root;
-        Fiber {
-            id,
-            sibling: None,
-            child: None,
-            parent: None,
-            body: Some(body),
-        }
-    }
-
-    fn text(id: FiberId, text: String) -> Self {
+    fn text(tx: channel::Sender<ComponentUpdate>, id: FiberId, text: String) -> Self {
         Self {
+            context: sorcery::ComponentContext::new(tx),
             id,
             sibling: None,
             child: None,
@@ -172,6 +167,7 @@ where
     }
 
     fn component(
+        tx: channel::Sender<ComponentUpdate>,
         id: FiberId,
         instance: Box<dyn AnyComponent<P>>,
         props: Box<dyn StoredProps>,
@@ -183,6 +179,7 @@ where
             props,
         };
         Self {
+            context: sorcery::ComponentContext::new(tx),
             id,
             sibling: None,
             child: None,
@@ -191,7 +188,12 @@ where
         }
     }
 
-    fn native(id: FiberId, instance: P, props: P::Props) -> Self {
+    fn native(
+        tx: channel::Sender<ComponentUpdate>,
+        id: FiberId,
+        instance: P,
+        props: P::Props,
+    ) -> Self {
         let body = FiberBody::Native {
             instance,
             props,
@@ -199,6 +201,7 @@ where
         };
         let state = Box::new(());
         Self {
+            context: sorcery::ComponentContext::new(tx),
             id,
             sibling: None,
             child: None,
@@ -216,29 +219,28 @@ where
         //     .into_iter()
         //     .filter_map(|f| f)
         //     .collect::<Vec<_
-        match &self.body {
+        self.context.reset();
+        let children = match &self.body {
             Some(FiberBody::Root) => {
                 unimplemented!("root");
             }
             Some(FiberBody::Text(_, _)) => Ok(vec![]),
             Some(FiberBody::Component {
                 instance, props, ..
-            }) => {
-                let mut context = sorcery::Context::new();
-                let mut ccontext = context.component();
-                Ok(vec![instance.render(
-                    &mut ccontext,
-                    props.as_ref(),
-                    children,
-                )?])
-            }
+            }) => Ok(vec![instance.render(
+                &mut self.context,
+                props.as_ref(),
+                children,
+            )?]),
             Some(FiberBody::Native {
                 instance, props, ..
             }) => Ok(instance.render(&props, children)?),
             None => {
                 unimplemented!();
             }
-        }
+        }?;
+
+        Ok(children)
     }
 }
 
@@ -435,12 +437,12 @@ where
 
 impl<P, R> Reconciler<P, R>
 where
-    P: RenderPrimitive,
-    R: Renderer<P>,
+    P: RenderPrimitive + 'static,
+    R: Renderer<P> + 'static,
 {
     pub fn new(renderer: R) -> Self {
         Self {
-            renderer,
+            renderer: Arc::new(RefCell::new(renderer)),
             next_fiber_id: 0,
             element_type: std::marker::PhantomData,
         }
@@ -457,6 +459,7 @@ where
 
     fn build_tree<'a>(
         &mut self,
+        tx: &channel::Sender<ComponentUpdate>,
         arena: &mut Arena<Fiber<P, R>>,
         element: &Element<P>,
     ) -> Result<ArenaNodeId, R::Error> {
@@ -464,18 +467,27 @@ where
         let children = element.children();
         let mut fiber = match element {
             Element::Text(txt) => {
-                let fiber = Fiber::text(self.next_fiber_id(), txt.to_owned());
+                let fiber = Fiber::text(tx.clone(), self.next_fiber_id(), txt.to_owned());
                 Ok(fiber)
             }
             Element::Component(comp_element) => {
                 let instance = comp_element.construct().map_err(Error::Sorcery)?;
-                let fiber =
-                    Fiber::component(self.next_fiber_id(), instance, comp_element.clone_props());
+                let fiber = Fiber::component(
+                    tx.clone(),
+                    self.next_fiber_id(),
+                    instance,
+                    comp_element.clone_props(),
+                );
                 Result::<_, R::Error>::Ok(fiber)
             }
             Element::Native(native) => {
                 let instance = native.ty.clone();
-                let fiber = Fiber::native(self.next_fiber_id(), instance, native.props.clone());
+                let fiber = Fiber::native(
+                    tx.clone(),
+                    self.next_fiber_id(),
+                    instance,
+                    native.props.clone(),
+                );
                 Ok(fiber)
             }
         }?;
@@ -488,7 +500,7 @@ where
                     .into_iter()
                     .rev()
                     .fold(Result::<_, R::Error>::Ok(None), |prev, next| {
-                        let child_id = self.build_tree(arena, &next)?;
+                        let child_id = self.build_tree(tx, arena, &next)?;
                         let mut child = arena.get_mut(child_id).unwrap();
                         child.parent = Some(id.clone());
                         child.sibling = prev?;
@@ -501,10 +513,6 @@ where
         Ok(id)
     }
 
-    fn root_fiber(&mut self) -> Fiber<P, R> {
-        Fiber::root(self.next_fiber_id())
-    }
-
     pub fn update_container(
         &mut self,
         ctx: &mut Context<P, R>,
@@ -512,8 +520,9 @@ where
         element: &Element<P>,
     ) -> Result<(), R::Error> {
         let root_id = {
-            let node_id = self.build_tree(&mut ctx.fibers, element)?;
+            let node_id = self.build_tree(&ctx.tx, &mut ctx.fibers, element)?;
             let mut root_fiber = Fiber {
+                context: sorcery::ComponentContext::new(ctx.tx.clone()),
                 body: Some(FiberBody::Root),
                 id: self.next_fiber_id(),
                 child: None,
@@ -534,6 +543,7 @@ where
                     Some(FiberBody::Text(txt, ref mut instance_key)) => {
                         *instance_key = Some(
                             self.renderer
+                                .borrow_mut()
                                 .create_text_instance(&txt)
                                 .map_err(Error::RendererError)?,
                         );
@@ -546,6 +556,7 @@ where
                     }) => {
                         *native_instance_key = Some(
                             self.renderer
+                                .borrow_mut()
                                 .create_instance(instance, props)
                                 .map_err(Error::RendererError)?,
                         );
@@ -607,6 +618,7 @@ where
                     let parent = ctx.fibers.get(parent).unwrap();
                     let text = ctx.fibers.get(text).unwrap();
                     self.renderer
+                        .borrow_mut()
                         .append_text_to_parent(
                             parent.native_instance_key().unwrap(),
                             text.text_instance_key().unwrap(),
@@ -615,6 +627,7 @@ where
                 }
                 Update::AppendChildToContainer { child } => {
                     self.renderer
+                        .borrow_mut()
                         .append_child_to_container(
                             container,
                             ctx.fibers
@@ -631,6 +644,7 @@ where
                     match (parent, child) {
                         (Some(parent), Some(child)) => {
                             self.renderer
+                                .borrow_mut()
                                 .append_child_to_parent(
                                     parent.native_instance_key().unwrap(),
                                     child.native_instance_key().unwrap(),
@@ -645,8 +659,57 @@ where
             }
         }
 
+        self.renderer.borrow().schedule_task(Box::new({
+            let r = self.renderer.clone();
+            let rx = ctx.rx.clone();
+            ProcessMessages {
+                rx: rx.clone(),
+                renderer: r,
+                component_type: PhantomData
+                // done: Box::new({
+                //     let r = r.clone();
+                //     let rx = rx.clone();
+                //     move || {
+                //         debug!("calling done");
+                //         r.borrow().schedule_task(Box::new(ProcessMessages {
+                //             rx: rx.clone(),
+                //             done: Box::new(|| {}),
+                //         }));
+                //     }
+                // }),
+            }
+        }));
+
         // self.renderer.append_child_to_container(container, tree);
         Ok(())
+    }
+}
+
+struct ProcessMessages<P, R>
+where
+    R: Renderer<P>,
+    P: RenderPrimitive,
+{
+    rx: channel::Receiver<ComponentUpdate>,
+    renderer: Arc<RefCell<R>>,
+    component_type: PhantomData<P>,
+}
+
+impl<P, R> Task for ProcessMessages<P, R>
+where
+    P: RenderPrimitive + 'static,
+    R: Renderer<P> + 'static,
+{
+    fn run(self: Box<Self>) {
+        debug!("running process messages");
+        self.renderer
+            .clone()
+            .borrow()
+            .schedule_task(Box::new(ProcessMessages {
+                rx: self.rx,
+                renderer: self.renderer,
+                component_type: self.component_type,
+            }));
     }
 }
 
@@ -656,6 +719,8 @@ where
     R: Renderer<P>,
 {
     fibers: Arena<Fiber<P, R>>,
+    tx: channel::Sender<ComponentUpdate>,
+    rx: channel::Receiver<ComponentUpdate>,
 }
 
 impl<'r, P, R> Context<P, R>
@@ -664,8 +729,11 @@ where
     R: Renderer<P>,
 {
     pub fn new() -> Self {
+        let (tx, rx) = channel::unbounded();
         Self {
             fibers: Arena::new(),
+            tx,
+            rx,
         }
     }
 }
@@ -687,6 +755,10 @@ enum Update {
 
 #[derive(Debug)]
 pub enum Op {}
+
+pub trait RendererContext {
+    fn context_for() -> Self;
+}
 
 pub trait Renderer<P>
 where
@@ -720,6 +792,11 @@ where
         parent: &Self::InstanceKey,
         child: &Self::InstanceKey,
     ) -> std::result::Result<(), Self::Error>;
+    fn schedule_task(&self, task: Box<dyn Task>);
+}
+
+pub trait Task {
+    fn run(self: Box<Self>);
 }
 
 #[cfg(test)]

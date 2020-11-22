@@ -511,6 +511,7 @@ checksum = "7acad6f34eb9e8a259d3283d1e8c1d34d7415943d4895f65cc73813c7396fc85"
 name = "sorcery"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "dyn-clone",
  "sorcery-codegen",
  "sorcery-macros",
