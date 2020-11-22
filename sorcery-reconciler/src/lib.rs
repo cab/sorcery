@@ -524,6 +524,8 @@ where
         Ok(id)
     }
 
+    pub fn process(&mut self) {}
+
     pub fn update_container(
         &mut self,
         ctx: &mut Context<P, R>,
@@ -699,6 +701,14 @@ where
         Ok(())
     }
 }
+
+// struct FiberMutTask {
+//     fibers: Vec<Fiber>,
+// }
+
+// impl Task for FiberMutTask {
+//     fn run(self: Box<Self>) {}
+// }
 
 struct ProcessMessages<P, R>
 where
