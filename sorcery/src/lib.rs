@@ -207,6 +207,7 @@ where
 pub struct ComponentContext {
     state_pointer: usize,
     state: Vec<HookState>,
+    context: Box<dyn ComponentUpdateContext>,
     tx: channel::Sender<ComponentUpdate>,
 }
 
@@ -218,8 +219,23 @@ impl fmt::Debug for ComponentContext {
 
 #[derive(Debug)]
 pub enum ComponentUpdate {
-    SetState { pointer: usize },
+    SetState {
+        pointer: usize,
+        context: Box<dyn ComponentUpdateContext>,
+    },
 }
+
+pub trait ComponentUpdateContext: Any + DynClone + Send + Sync + fmt::Debug {}
+
+impl<T> ComponentUpdateContext for T where T: Any + Clone + Send + Sync + fmt::Debug {}
+
+dyn_clone::clone_trait_object!(ComponentUpdateContext);
+
+// impl fmt::Debug for dyn ComponentUpdateContext {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         f.debug_struct("ComponentUpdateContext").finish()
+//     }
+// }
 
 #[derive()]
 enum HookState {
@@ -246,11 +262,15 @@ impl<S: 'static + PartialEq> Dep for S {
 }
 
 impl ComponentContext {
-    pub fn new(tx: channel::Sender<ComponentUpdate>) -> Self {
+    pub fn new<I>(tx: channel::Sender<ComponentUpdate>, context: I) -> Self
+    where
+        I: ComponentUpdateContext,
+    {
         Self {
             state: vec![],
             state_pointer: 0,
             tx,
+            context: Box::new(context),
         }
     }
 
@@ -270,10 +290,14 @@ impl ComponentContext {
         let pointer = self.state_pointer;
         let result = (initial, {
             let tx = self.tx.clone();
+            let ctx = self.context.clone();
             move |e: T| {
                 debug!("updating state for {:?}", std::any::type_name::<T>());
-                tx.send(ComponentUpdate::SetState { pointer })
-                    .expect("todo");
+                tx.send(ComponentUpdate::SetState {
+                    pointer,
+                    context: ctx.clone(),
+                })
+                .expect("todo");
             }
         });
         self.increment_pointer();

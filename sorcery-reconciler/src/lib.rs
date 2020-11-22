@@ -150,6 +150,17 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
+struct FiberComponentContext {
+    id: FiberId,
+}
+
+impl FiberComponentContext {
+    fn new(id: FiberId) -> Self {
+        Self { id }
+    }
+}
+
 impl<'r, P, R> Fiber<P, R>
 where
     P: RenderPrimitive,
@@ -157,7 +168,7 @@ where
 {
     fn text(tx: channel::Sender<ComponentUpdate>, id: FiberId, text: String) -> Self {
         Self {
-            context: sorcery::ComponentContext::new(tx),
+            context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
             id,
             sibling: None,
             child: None,
@@ -179,7 +190,7 @@ where
             props,
         };
         Self {
-            context: sorcery::ComponentContext::new(tx),
+            context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
             id,
             sibling: None,
             child: None,
@@ -201,7 +212,7 @@ where
         };
         let state = Box::new(());
         Self {
-            context: sorcery::ComponentContext::new(tx),
+            context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
             id,
             sibling: None,
             child: None,
@@ -521,10 +532,14 @@ where
     ) -> Result<(), R::Error> {
         let root_id = {
             let node_id = self.build_tree(&ctx.tx, &mut ctx.fibers, element)?;
+            let fiber_id = self.next_fiber_id();
             let mut root_fiber = Fiber {
-                context: sorcery::ComponentContext::new(ctx.tx.clone()),
+                context: sorcery::ComponentContext::new(
+                    ctx.tx.clone(),
+                    FiberComponentContext::new(fiber_id),
+                ),
                 body: Some(FiberBody::Root),
-                id: self.next_fiber_id(),
+                id: fiber_id,
                 child: None,
                 parent: None,
                 sibling: None,
@@ -701,7 +716,9 @@ where
     R: Renderer<P> + 'static,
 {
     fn run(self: Box<Self>) {
-        debug!("running process messages");
+        for msg in self.rx.try_iter() {
+            debug!("update: {:?}", msg);
+        }
         self.renderer
             .clone()
             .borrow()
