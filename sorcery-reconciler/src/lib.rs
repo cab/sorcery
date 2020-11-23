@@ -1,21 +1,19 @@
 use crossbeam_channel as channel;
 use derivative::Derivative;
 use generational_arena::{Arena, Index as ArenaNodeId};
-use sorcery::ComponentUpdate;
-use std::marker::PhantomData;
-use tokio::sync::mpsc;
-use tracing::{debug, trace, warn};
-
 use sorcery::{
-    AnyComponent, Component, ComponentContext, ComponentElement, ComponentId, Dep, Element, Key,
-    NativeElement, RenderPrimitive, StoredProps, StoredState,
+    AnyComponent, Component, ComponentContext, ComponentElement, ComponentId, ComponentUpdate, Dep,
+    Element, Key, NativeElement, RenderPrimitive, StoredProps, StoredState,
 };
 use std::{
     any::Any,
     cell::RefCell,
     collections::{HashMap, VecDeque},
+    marker::PhantomData,
     sync::Arc,
 };
+use tokio::sync::mpsc;
+use tracing::{debug, trace, warn};
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error<E>
@@ -615,6 +613,7 @@ where
 
     pub async fn run(&mut self) {
         debug!("running");
+        let mut current_fibers: Option<Arena<Fiber<P, R>>> = None;
         loop {
             tokio::select! {
                 Some(event) = self.events_rx.recv() => {
@@ -626,13 +625,17 @@ where
                         mut container,
                     } => {
                         self.commit(&mut fibers, root_id, &mut container).expect("todo");
+                        current_fibers = Some(fibers);
                     }
                 }
                 }
                 Some(event) = self.component_events_rx.recv() => {
                     match event {
-                        ComponentUpdate::SetState {..} => {
-                            debug!("SET STATE");
+                        ComponentUpdate::SetState {mut context, pointer} => {
+                            let context = context.as_any().downcast_mut::<FiberComponentContext>().unwrap();
+                            debug!("SET STATE {:?}", context);
+                            let fiber = current_fibers.as_ref().unwrap().iter().find(|(_, n)| n.id == context.id).unwrap();
+                            debug!("fibber: {:?}", fiber);
                         }
                     }
                 }

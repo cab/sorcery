@@ -212,56 +212,6 @@ pub struct ComponentContext {
     tx: mpsc::UnboundedSender<ComponentUpdate>,
 }
 
-impl fmt::Debug for ComponentContext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ComponentContext.TODO").finish()
-    }
-}
-
-#[derive(Debug)]
-pub enum ComponentUpdate {
-    SetState {
-        pointer: usize,
-        context: Box<dyn ComponentUpdateContext>,
-    },
-}
-
-pub trait ComponentUpdateContext: Any + DynClone + Send + Sync + fmt::Debug {}
-
-impl<T> ComponentUpdateContext for T where T: Any + Clone + Send + Sync + fmt::Debug {}
-
-dyn_clone::clone_trait_object!(ComponentUpdateContext);
-
-// impl fmt::Debug for dyn ComponentUpdateContext {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         f.debug_struct("ComponentUpdateContext").finish()
-//     }
-// }
-
-#[derive()]
-enum HookState {
-    State(Box<dyn Any>),
-    Effect(Vec<Box<dyn Dep>>),
-}
-
-pub trait Dep {
-    fn as_any(&self) -> &dyn Any;
-    fn compare(&self, other: &dyn Dep) -> bool;
-}
-
-impl<S: 'static + PartialEq> Dep for S {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn compare(&self, other: &dyn Dep) -> bool {
-        other
-            .as_any()
-            .downcast_ref::<S>()
-            .map_or(false, |a| self == a)
-    }
-}
-
 impl ComponentContext {
     pub fn new<I>(tx: mpsc::UnboundedSender<ComponentUpdate>, context: I) -> Self
     where
@@ -303,6 +253,65 @@ impl ComponentContext {
         });
         self.increment_pointer();
         result
+    }
+}
+
+impl fmt::Debug for ComponentContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ComponentContext.TODO").finish()
+    }
+}
+
+#[derive(Debug)]
+pub enum ComponentUpdate {
+    SetState {
+        pointer: usize,
+        context: Box<dyn ComponentUpdateContext>,
+    },
+}
+
+pub trait ComponentUpdateContext: Any + DynClone + Send + Sync + fmt::Debug {
+    fn as_any(&mut self) -> &mut dyn Any;
+}
+
+impl<T> ComponentUpdateContext for T
+where
+    T: Any + Clone + Send + Sync + fmt::Debug,
+{
+    fn as_any(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+dyn_clone::clone_trait_object!(ComponentUpdateContext);
+
+// impl fmt::Debug for dyn ComponentUpdateContext {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         f.debug_struct("ComponentUpdateContext").finish()
+//     }
+// }
+
+#[derive()]
+enum HookState {
+    State(Box<dyn Any>),
+    Effect(Vec<Box<dyn Dep>>),
+}
+
+pub trait Dep {
+    fn as_any(&self) -> &dyn Any;
+    fn compare(&self, other: &dyn Dep) -> bool;
+}
+
+impl<S: 'static + PartialEq> Dep for S {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn compare(&self, other: &dyn Dep) -> bool {
+        other
+            .as_any()
+            .downcast_ref::<S>()
+            .map_or(false, |a| self == a)
     }
 }
 
