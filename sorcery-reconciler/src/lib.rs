@@ -379,53 +379,6 @@ where
     }
 }
 
-fn walk_fiber_ids<P, R>(
-    arena: &mut Arena<Fiber<P, R>>,
-    start: ArenaNodeId,
-    mut process: impl FnMut(
-        &ArenaNodeId,
-        &mut Arena<Fiber<P, R>>,
-    ) -> sorcery::Result<Option<ArenaNodeId>>,
-) -> sorcery::Result<()>
-where
-    P: RenderPrimitive,
-    R: Renderer<P>,
-{
-    let root = start;
-    let mut current = start;
-    loop {
-        let child = process(&current, arena)?;
-        if let Some(child) = child {
-            current = child;
-            continue;
-        }
-
-        if current == root {
-            return Ok(());
-        }
-
-        loop {
-            let current_node = arena.get(current).unwrap(); // todo
-            if !current_node.sibling.is_none() {
-                break;
-            }
-            if current_node.parent.is_none()
-                || current_node.parent.map(|p| p == root).unwrap_or(false)
-            {
-                return Ok(());
-            }
-            if let Some(parent) = current_node.parent {
-                current = parent;
-            }
-        }
-        let current_node = arena.get(current).unwrap(); // todo
-
-        if let Some(sibling) = current_node.sibling {
-            current = sibling;
-        }
-    }
-}
-
 fn walk_fibers_mut<E, P, R>(
     arena: &mut Arena<Fiber<P, R>>,
     start: ArenaNodeId,
@@ -439,8 +392,8 @@ where
     let root = start;
     let mut current = start;
     loop {
-        let child = if let Some(current) = arena.get_mut(current) {
-            process(current)?
+        let child = if let Some(current_fiber) = arena.get_mut(current) {
+            process(current_fiber)?
         } else {
             panic!();
         };
@@ -535,6 +488,7 @@ where
             }),
         )?;
         walk_fibers(&fibers, root_id, |fiber, id| {
+            debug!("walk {:?}", fiber);
             match &fiber.body {
                 Some(FiberBody::Text(text, Some(text_instance))) => {
                     let parent = fiber.parent_native(&fibers);
@@ -580,6 +534,16 @@ where
             Ok(fiber.child)
         })?;
 
+        self.process_updates(container, fibers, rx)?;
+        Ok(())
+    }
+
+    fn process_updates(
+        &self,
+        container: &mut R::Container,
+        fibers: &mut Arena<Fiber<P, R>>,
+        rx: channel::Receiver<Update>,
+    ) -> Result<(), R::Error> {
         for update in rx.try_iter() {
             match update {
                 Update::AppendTextToParent { parent, text } => {
