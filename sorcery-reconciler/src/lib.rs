@@ -40,6 +40,8 @@ where
     renderer: Arc<RefCell<R>>,
     events_rx: mpsc::UnboundedReceiver<Event<P, R>>,
     events_tx: mpsc::UnboundedSender<Event<P, R>>,
+    component_events_rx: mpsc::UnboundedReceiver<ComponentUpdate>,
+    component_events_tx: mpsc::UnboundedSender<ComponentUpdate>,
 }
 
 #[derive(Derivative)]
@@ -176,9 +178,9 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    fn text(id: FiberId, text: String) -> Self {
+    fn text(tx: mpsc::UnboundedSender<ComponentUpdate>, id: FiberId, text: String) -> Self {
         Self {
-            context: sorcery::ComponentContext::new(FiberComponentContext::new(id)),
+            context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
             id,
             sibling: None,
             child: None,
@@ -188,6 +190,7 @@ where
     }
 
     fn component(
+        tx: mpsc::UnboundedSender<ComponentUpdate>,
         id: FiberId,
         instance: Box<dyn AnyComponent<P>>,
         props: Box<dyn StoredProps>,
@@ -199,7 +202,7 @@ where
             props,
         };
         Self {
-            context: sorcery::ComponentContext::new(FiberComponentContext::new(id)),
+            context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
             id,
             sibling: None,
             child: None,
@@ -208,7 +211,12 @@ where
         }
     }
 
-    fn native(id: FiberId, instance: P, props: P::Props) -> Self {
+    fn native(
+        tx: mpsc::UnboundedSender<ComponentUpdate>,
+        id: FiberId,
+        instance: P,
+        props: P::Props,
+    ) -> Self {
         let body = FiberBody::Native {
             instance,
             props,
@@ -216,7 +224,7 @@ where
         };
         let state = Box::new(());
         Self {
-            context: sorcery::ComponentContext::new(FiberComponentContext::new(id)),
+            context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
             id,
             sibling: None,
             child: None,
@@ -458,12 +466,15 @@ where
 {
     pub fn new(renderer: R) -> Self {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
+        let (component_events_tx, component_events_rx) = mpsc::unbounded_channel();
         Self {
             renderer: Arc::new(RefCell::new(renderer)),
             next_fiber_id: 0,
             element_type: std::marker::PhantomData,
             events_rx,
             events_tx,
+            component_events_rx,
+            component_events_tx,
         }
     }
 
@@ -604,17 +615,28 @@ where
 
     pub async fn run(&mut self) {
         debug!("running");
-        while let Some(event) = self.events_rx.recv().await {
-            debug!("event: {:?}", event);
-            match event {
-                Event::InitialRender {
-                    mut fibers,
-                    root_id,
-                    mut container,
-                } => {
-                    self.commit(&mut fibers, root_id, &mut container);
+        loop {
+            tokio::select! {
+                Some(event) = self.events_rx.recv() => {
+                    debug!("event: {:?}", event);
+                match event {
+                    Event::InitialRender {
+                        mut fibers,
+                        root_id,
+                        mut container,
+                    } => {
+                        self.commit(&mut fibers, root_id, &mut container).expect("todo");
+                    }
                 }
-            }
+                }
+                Some(event) = self.component_events_rx.recv() => {
+                    match event {
+                        ComponentUpdate::SetState {..} => {
+                            debug!("SET STATE");
+                        }
+                    }
+                }
+            };
         }
     }
 
@@ -628,6 +650,7 @@ where
             TaskPriority::Immediate,
             Box::new(RenderTask::<P, R>::new(
                 self.events_tx.clone(),
+                self.component_events_tx.clone(),
                 element.clone(),
                 container,
             )),
@@ -660,6 +683,7 @@ where
 }
 
 fn build_tree<'a, P, R, F>(
+    tx: &mpsc::UnboundedSender<ComponentUpdate>,
     arena: &mut Arena<Fiber<P, R>>,
     element: &Element<P>,
     mut next_fiber_id: F,
@@ -674,17 +698,22 @@ where
     let children = element.children();
     let fiber = match element {
         Element::Text(txt) => {
-            let fiber = Fiber::text(next_fiber_id(), txt.to_owned());
+            let fiber = Fiber::text(tx.clone(), next_fiber_id(), txt.to_owned());
             Ok(fiber)
         }
         Element::Component(comp_element) => {
             let instance = comp_element.construct().map_err(Error::Sorcery)?;
-            let fiber = Fiber::component(next_fiber_id(), instance, comp_element.clone_props());
+            let fiber = Fiber::component(
+                tx.clone(),
+                next_fiber_id(),
+                instance,
+                comp_element.clone_props(),
+            );
             Result::<_, R::Error>::Ok(fiber)
         }
         Element::Native(native) => {
             let instance = native.ty.clone();
-            let fiber = Fiber::native(next_fiber_id(), instance, native.props.clone());
+            let fiber = Fiber::native(tx.clone(), next_fiber_id(), instance, native.props.clone());
             Ok(fiber)
         }
     }?;
@@ -697,7 +726,7 @@ where
                 .into_iter()
                 .rev()
                 .fold(Result::<_, R::Error>::Ok(None), |prev, next| {
-                    let child_id = build_tree(arena, &next, next_fiber_id.clone())?;
+                    let child_id = build_tree(tx, arena, &next, next_fiber_id.clone())?;
                     let mut child = arena.get_mut(child_id).unwrap();
                     child.parent = Some(id.clone());
                     child.sibling = prev?;
@@ -717,6 +746,7 @@ where
 {
     root: Element<P>,
     tx: mpsc::UnboundedSender<Event<P, R>>,
+    component_tx: mpsc::UnboundedSender<ComponentUpdate>,
     container: R::Container,
 }
 
@@ -727,12 +757,14 @@ where
 {
     fn new(
         tx: mpsc::UnboundedSender<Event<P, R>>,
+        component_tx: mpsc::UnboundedSender<ComponentUpdate>,
         root: Element<P>,
         container: R::Container,
     ) -> Self {
         Self {
             root,
             tx,
+            component_tx,
             container,
         }
     }
@@ -756,9 +788,12 @@ where
         };
         let root_id = {
             let fiber_id = next_fiber_id();
-            let node_id = build_tree(&mut fibers, &self.root, next_fiber_id)?;
+            let node_id = build_tree(&self.component_tx, &mut fibers, &self.root, next_fiber_id)?;
             let mut root_fiber = Fiber {
-                context: sorcery::ComponentContext::new(FiberComponentContext::new(fiber_id)),
+                context: sorcery::ComponentContext::new(
+                    self.component_tx.clone(),
+                    FiberComponentContext::new(fiber_id),
+                ),
                 body: Some(FiberBody::Root),
                 id: fiber_id,
                 child: None,

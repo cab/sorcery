@@ -534,6 +534,7 @@ dependencies = [
  "sorcery-macros",
  "test-env-log",
  "thiserror",
+ "tokio",
  "tracing",
  "tracing-subscriber 0.1.6",
 ]
@@ -676,6 +677,18 @@ checksum = "9dfe2523e6fa84ddf5e688151d4e5fddc51678de9752c6512a24714c23818d61"
 dependencies = [
  "autocfg",
  "pin-project-lite 0.2.0",
+ "tokio-macros",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21d30fdbb5dc2d8f91049691aa1a9d4d4ae422a21c334ce8936e5886d30c5c45"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

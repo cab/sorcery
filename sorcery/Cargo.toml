@@ -17,6 +17,7 @@ dyn-clone = "^1.0"
 sorcery-codegen = {path = "../sorcery-codegen"}
 sorcery-macros = {path = "../sorcery-macros"}
 thiserror = "^1.0"
+tokio = {version = "^0.3", default-features = false, features = ["sync"]}
 tracing = "0.1"
 
 [dev-dependencies]

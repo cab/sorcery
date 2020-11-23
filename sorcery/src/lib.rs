@@ -8,6 +8,7 @@ use std::{
     collections::HashMap,
     fmt::{self, Debug},
 };
+use tokio::sync::mpsc;
 use tracing::debug;
 
 pub use sorcery_macros::{rsx, Props};
@@ -208,6 +209,7 @@ pub struct ComponentContext {
     state_pointer: usize,
     state: Vec<HookState>,
     context: Box<dyn ComponentUpdateContext>,
+    tx: mpsc::UnboundedSender<ComponentUpdate>,
 }
 
 impl fmt::Debug for ComponentContext {
@@ -261,7 +263,7 @@ impl<S: 'static + PartialEq> Dep for S {
 }
 
 impl ComponentContext {
-    pub fn new<I>(context: I) -> Self
+    pub fn new<I>(tx: mpsc::UnboundedSender<ComponentUpdate>, context: I) -> Self
     where
         I: ComponentUpdateContext,
     {
@@ -269,6 +271,7 @@ impl ComponentContext {
             state: vec![],
             state_pointer: 0,
             context: Box::new(context),
+            tx,
         }
     }
 
@@ -288,13 +291,14 @@ impl ComponentContext {
         let pointer = self.state_pointer;
         let result = (initial, {
             let ctx = self.context.clone();
+            let tx = self.tx.clone();
             move |e: T| {
                 debug!("updating state for {:?}", std::any::type_name::<T>());
-                // tx.send(ComponentUpdate::SetState {
-                //     pointer,
-                //     context: ctx.clone(),
-                // })
-                // .expect("todo");
+                tx.send(ComponentUpdate::SetState {
+                    pointer,
+                    context: ctx.clone(),
+                })
+                .expect("todo");
             }
         });
         self.increment_pointer();
