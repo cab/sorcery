@@ -2,7 +2,7 @@ use dyn_clone::DynClone;
 use generational_arena::{Arena, Index as ArenaIndex};
 use gloo::{events::EventListener, timers::callback::Timeout};
 use sorcery::{Props, RenderPrimitive, StoredProps};
-use sorcery_reconciler::{Reconciler, Task};
+use sorcery_reconciler::{Reconciler, Task, TaskPriority};
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
 use tracing::{debug, trace, warn};
 use wasm_bindgen::{prelude::*, JsCast};
@@ -104,12 +104,12 @@ impl sorcery_reconciler::RendererContext for HtmlContext {
 
 pub fn render(
     document: Document,
-    container: &mut Element,
+    mut container: Element,
     element: &sorcery::Element<Html>,
 ) -> sorcery_reconciler::Result<(), Error> {
     let renderer = Renderer::new(document);
     let mut reconciler = sorcery_reconciler::Reconciler::new(renderer);
-    reconciler.create_container(container);
+    reconciler.create_container(&mut container);
     let mut ctx = sorcery_reconciler::Context::new();
     reconciler.update_container(&mut ctx, container, element)?;
     wasm_bindgen_futures::spawn_local(async move {
@@ -129,16 +129,23 @@ impl sorcery_reconciler::Renderer<Html> for Renderer {
     type TextInstanceKey = ArenaIndex;
     type Error = Error;
 
-    fn schedule_task(&self, task: Box<dyn Task>) {
-        web_sys::window()
-            .unwrap()
-            .request_idle_callback(
-                Closure::once_into_js(move || {
-                    task.run();
-                })
-                .unchecked_ref(),
-            )
-            .unwrap();
+    fn schedule_task(&self, priority: TaskPriority, task: Box<dyn Task>) {
+        match priority {
+            TaskPriority::Immediate => {
+                task.run().unwrap();
+            }
+            TaskPriority::Idle => {
+                web_sys::window()
+                    .unwrap()
+                    .request_idle_callback(
+                        Closure::once_into_js(move || {
+                            task.run().unwrap();
+                        })
+                        .unchecked_ref(),
+                    )
+                    .unwrap();
+            }
+        }
     }
 
     fn create_instance(

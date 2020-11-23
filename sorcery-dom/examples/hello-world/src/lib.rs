@@ -11,12 +11,7 @@ pub fn start() -> Result<(), JsValue> {
     let document = web_sys::window().unwrap().document().unwrap();
     let mut root = document.get_element_by_id("root").unwrap();
 
-    render(
-        document,
-        &mut root,
-        &Element::component::<App>(None, (), vec![]),
-    )
-    .unwrap();
+    render(document, root, &Element::component::<App>(None, (), vec![])).unwrap();
 
     Ok(())
 }

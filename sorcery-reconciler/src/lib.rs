@@ -52,17 +52,9 @@ where
     InitialRender {
         fibers: Arena<Fiber<P, R>>,
         root_id: ArenaNodeId,
+        #[derivative(Debug = "ignore")]
+        container: R::Container,
     },
-}
-
-impl<P, R> Reconciler<P, R>
-where
-    P: RenderPrimitive,
-    R: Renderer<P>,
-{
-    fn renderer(&self) -> Arc<RefCell<R>> {
-        self.renderer.clone()
-    }
 }
 
 #[derive(Copy, Clone, Debug, PartialOrd, PartialEq, Hash, Eq)]
@@ -477,100 +469,15 @@ where
 
     pub fn create_container(&mut self, base: &mut R::Container) {}
 
-    fn next_fiber_id(&mut self) -> FiberId {
-        let id = self.next_fiber_id;
-        self.next_fiber_id += 1;
-        let id = FiberId(id);
-        id
-    }
-
-    fn build_tree<'a>(
+    fn commit(
         &mut self,
-        tx: &channel::Sender<ComponentUpdate>,
-        arena: &mut Arena<Fiber<P, R>>,
-        element: &Element<P>,
-    ) -> Result<ArenaNodeId, R::Error> {
-        debug!("rendering a {:?}\n\n", element);
-        let children = element.children();
-        let mut fiber = match element {
-            Element::Text(txt) => {
-                let fiber = Fiber::text(self.next_fiber_id(), txt.to_owned());
-                Ok(fiber)
-            }
-            Element::Component(comp_element) => {
-                let instance = comp_element.construct().map_err(Error::Sorcery)?;
-                let fiber =
-                    Fiber::component(self.next_fiber_id(), instance, comp_element.clone_props());
-                Result::<_, R::Error>::Ok(fiber)
-            }
-            Element::Native(native) => {
-                let instance = native.ty.clone();
-                let fiber = Fiber::native(self.next_fiber_id(), instance, native.props.clone());
-                Ok(fiber)
-            }
-        }?;
-        let id = arena.insert(fiber);
-        {
-            let to_child = {
-                let node = arena.get_mut(id).unwrap();
-                node.render(&children)
-                    .map_err(Error::Sorcery)?
-                    .into_iter()
-                    .rev()
-                    .fold(Result::<_, R::Error>::Ok(None), |prev, next| {
-                        let child_id = self.build_tree(tx, arena, &next)?;
-                        let mut child = arena.get_mut(child_id).unwrap();
-                        child.parent = Some(id.clone());
-                        child.sibling = prev?;
-                        Ok(Some(child_id))
-                    })?
-            };
-            let mut node = arena.get_mut(id).unwrap();
-            node.child = to_child;
-        }
-        Ok(id)
-    }
-
-    pub async fn run(&mut self) {
-        debug!("running");
-        while let Some(event) = self.events_rx.recv().await {
-            debug!("event: {:?}", event);
-            // tx.send(msg).await;
-        }
-    }
-
-    pub fn update_container(
-        &mut self,
-        ctx: &mut Context<P, R>,
+        fibers: &mut Arena<Fiber<P, R>>,
+        root_id: ArenaNodeId,
         container: &mut R::Container,
-        element: &Element<P>,
     ) -> Result<(), R::Error> {
-        self.renderer
-            .borrow()
-            .schedule_task(Box::new(RenderTask::<P, R>::new(
-                self.events_tx.clone(),
-                element.clone(),
-            )));
-
-        let root_id = {
-            let node_id = self.build_tree(&ctx.tx, &mut ctx.fibers, element)?;
-            let fiber_id = self.next_fiber_id();
-            let mut root_fiber = Fiber {
-                context: sorcery::ComponentContext::new(FiberComponentContext::new(fiber_id)),
-                body: Some(FiberBody::Root),
-                id: fiber_id,
-                child: None,
-                parent: None,
-                sibling: None,
-            };
-            root_fiber.child = Some(node_id);
-            let root_id = ctx.fibers.insert(root_fiber);
-            ctx.fibers.get_mut(node_id).unwrap().parent = Some(root_id);
-            root_id
-        };
         let (tx, rx) = channel::unbounded::<Update>();
         walk_fibers_mut(
-            &mut ctx.fibers,
+            fibers,
             root_id,
             process_wrap_mut(|fiber| {
                 match &mut fiber.body {
@@ -600,17 +507,17 @@ where
                 Ok(())
             }),
         )?;
-        walk_fibers(&ctx.fibers, root_id, |fiber, id| {
+        walk_fibers(&fibers, root_id, |fiber, id| {
             match &fiber.body {
                 Some(FiberBody::Text(text, Some(text_instance))) => {
-                    let parent = fiber.parent_native(&ctx.fibers);
+                    let parent = fiber.parent_native(&fibers);
                     if parent.as_ref().map_or(false, |p| p.is_native()) {
                         if parent.as_ref().map_or(false, |p| p.is_root()) {
                             debug!("append text to container?");
                         } else if let Some(_) = parent.and_then(|p| p.native_instance_key()) {
                             debug!("append text ({:?}) to parent", text);
                             tx.send(Update::AppendTextToParent {
-                                parent: fiber.parent_native_id(&ctx.fibers).unwrap(),
+                                parent: fiber.parent_native_id(&fibers).unwrap(),
                                 text: *id,
                             })
                             .unwrap();
@@ -623,7 +530,7 @@ where
                     native_instance_key: Some(native_instance_key),
                     ..
                 }) => {
-                    let parent = fiber.parent_native(&ctx.fibers);
+                    let parent = fiber.parent_native(&fibers);
                     if parent.as_ref().map_or(false, |p| p.is_native()) {
                         if parent.as_ref().map_or(false, |p| p.is_root()) {
                             debug!("append to container");
@@ -632,7 +539,7 @@ where
                         } else if let Some(_) = parent.and_then(|p| p.native_instance_key()) {
                             debug!("append to child");
                             tx.send(Update::AppendChildToParent {
-                                parent: fiber.parent_native_id(&ctx.fibers).unwrap(),
+                                parent: fiber.parent_native_id(&fibers).unwrap(),
                                 child: *id,
                             })
                             .unwrap();
@@ -649,8 +556,8 @@ where
         for update in rx.try_iter() {
             match update {
                 Update::AppendTextToParent { parent, text } => {
-                    let parent = ctx.fibers.get(parent).unwrap();
-                    let text = ctx.fibers.get(text).unwrap();
+                    let parent = fibers.get(parent).unwrap();
+                    let text = fibers.get(text).unwrap();
                     self.renderer
                         .borrow_mut()
                         .append_text_to_parent(
@@ -664,7 +571,7 @@ where
                         .borrow_mut()
                         .append_child_to_container(
                             container,
-                            ctx.fibers
+                            fibers
                                 .get_mut(child)
                                 .unwrap()
                                 .native_instance_key()
@@ -674,7 +581,7 @@ where
                         .map_err(Error::RendererError)?;
                 }
                 Update::AppendChildToParent { parent, child } => {
-                    let (parent, child) = ctx.fibers.get2_mut(parent, child);
+                    let (parent, child) = fibers.get2_mut(parent, child);
                     match (parent, child) {
                         (Some(parent), Some(child)) => {
                             self.renderer
@@ -692,6 +599,39 @@ where
                 }
             }
         }
+        Ok(())
+    }
+
+    pub async fn run(&mut self) {
+        debug!("running");
+        while let Some(event) = self.events_rx.recv().await {
+            debug!("event: {:?}", event);
+            match event {
+                Event::InitialRender {
+                    mut fibers,
+                    root_id,
+                    mut container,
+                } => {
+                    self.commit(&mut fibers, root_id, &mut container);
+                }
+            }
+        }
+    }
+
+    pub fn update_container(
+        &mut self,
+        ctx: &mut Context<P, R>,
+        container: R::Container,
+        element: &Element<P>,
+    ) -> Result<(), R::Error> {
+        self.renderer.borrow().schedule_task(
+            TaskPriority::Immediate,
+            Box::new(RenderTask::<P, R>::new(
+                self.events_tx.clone(),
+                element.clone(),
+                container,
+            )),
+        );
 
         // self.renderer.borrow().schedule_task(Box::new({
         //     let r = self.renderer.clone();
@@ -777,6 +717,7 @@ where
 {
     root: Element<P>,
     tx: mpsc::UnboundedSender<Event<P, R>>,
+    container: R::Container,
 }
 
 impl<P, R> RenderTask<P, R>
@@ -784,8 +725,16 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    fn new(tx: mpsc::UnboundedSender<Event<P, R>>, root: Element<P>) -> Self {
-        Self { root, tx }
+    fn new(
+        tx: mpsc::UnboundedSender<Event<P, R>>,
+        root: Element<P>,
+        container: R::Container,
+    ) -> Self {
+        Self {
+            root,
+            tx,
+            container,
+        }
     }
 }
 
@@ -822,7 +771,11 @@ where
             root_id
         };
         self.tx
-            .send(Event::InitialRender { fibers, root_id })
+            .send(Event::InitialRender {
+                fibers,
+                root_id,
+                container: self.container,
+            })
             .unwrap();
         Ok(())
     }
@@ -937,7 +890,13 @@ where
         parent: &Self::InstanceKey,
         child: &Self::InstanceKey,
     ) -> std::result::Result<(), Self::Error>;
-    fn schedule_task(&self, task: Box<dyn Task>);
+    fn schedule_task(&self, priority: TaskPriority, task: Box<dyn Task>);
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum TaskPriority {
+    Immediate,
+    Idle,
 }
 
 pub trait Task {
