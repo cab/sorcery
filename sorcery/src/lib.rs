@@ -155,7 +155,7 @@ where
 {
     pub fn component<C>(key: Option<Key>, props: C::Props, children: Vec<Element<T>>) -> Self
     where
-        C: Component<T> + 'static,
+        C: Component<T> + Clone + 'static,
         T: 'static,
     {
         let constructor = |props: &dyn StoredProps| <C as AnyComponent<T>>::new(props);
@@ -205,7 +205,7 @@ where
     }
 }
 
-#[derive()]
+#[derive(Clone)]
 pub struct ComponentContext {
     state_pointer: usize,
     state: Vec<HookState>,
@@ -352,7 +352,7 @@ dyn_clone::clone_trait_object!(ComponentUpdateContext);
 //     }
 // }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum HookState {
     State(Box<dyn StoredState>),
     // Effect(Vec<Box<dyn Dep>>),
@@ -382,7 +382,7 @@ impl<S: 'static + PartialEq> Dep for S {
     }
 }
 
-pub trait AnyComponent<T>
+pub trait AnyComponent<T>: DynClone
 where
     T: RenderPrimitive,
 {
@@ -398,6 +398,8 @@ where
     ) -> Result<Element<T>>;
 }
 
+dyn_clone::clone_trait_object!(<T> AnyComponent<T>);
+
 impl<P> Debug for dyn AnyComponent<P>
 where
     P: RenderPrimitive,
@@ -407,7 +409,7 @@ where
     }
 }
 
-pub trait Component<T>
+pub trait Component<T>: Clone
 where
     T: RenderPrimitive,
 {
@@ -429,7 +431,7 @@ where
 
 impl<C, P, T> AnyComponent<T> for C
 where
-    C: Component<T, Props = P> + 'static,
+    C: Component<T, Props = P> + Clone + 'static,
     P: 'static,
     T: RenderPrimitive,
 {

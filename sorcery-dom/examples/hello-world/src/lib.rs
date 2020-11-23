@@ -16,6 +16,7 @@ pub fn start() -> Result<(), JsValue> {
     Ok(())
 }
 
+#[derive(Debug, Clone)]
 struct App {}
 
 impl Component<Html> for App {
@@ -52,6 +53,7 @@ impl Component<Html> for App {
     }
 }
 
+#[derive(Debug, Clone)]
 struct Blue {}
 
 impl Component<Html> for Blue {

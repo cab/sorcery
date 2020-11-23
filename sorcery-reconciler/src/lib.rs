@@ -25,7 +25,7 @@ where
     #[error(transparent)]
     Sorcery(#[from] sorcery::Error),
     #[error("invalid fiber TODO ID")]
-    InvalidFiber(),
+    InvalidFiber,
 }
 
 pub type Result<T, E> = std::result::Result<T, Error<E>>;
@@ -58,13 +58,16 @@ where
         #[derivative(Debug = "ignore")]
         container: R::Container,
     },
+    ReRender {
+        fibers: Arena<Fiber<P, R>>,
+    },
 }
 
 #[derive(Copy, Clone, Debug, PartialOrd, PartialEq, Hash, Eq)]
 struct FiberId(u32);
 
 #[derive(Derivative)]
-#[derivative(Debug(bound = ""))]
+#[derivative(Debug(bound = ""), Clone(bound = ""))]
 struct Fiber<P, R>
 where
     P: RenderPrimitive,
@@ -72,6 +75,7 @@ where
 {
     id: FiberId,
     context: sorcery::ComponentContext,
+    alternate: Option<ArenaNodeId>,
     body: Option<FiberBody<P, R>>,
     sibling: Option<ArenaNodeId>,
     child: Option<ArenaNodeId>,
@@ -193,16 +197,21 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    fn text(tx: mpsc::UnboundedSender<ComponentUpdate>, id: FiberId, text: String) -> Self {
+    fn new(tx: mpsc::UnboundedSender<ComponentUpdate>, id: FiberId, body: FiberBody<P, R>) -> Self {
         Self {
             context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
             id,
             dirty: false,
             sibling: None,
+            alternate: None,
             child: None,
             parent: None,
-            body: Some(FiberBody::Text(text, None)),
+            body: Some(body),
         }
+    }
+
+    fn text(tx: mpsc::UnboundedSender<ComponentUpdate>, id: FiberId, text: String) -> Self {
+        Self::new(tx, id, FiberBody::Text(text, None))
     }
 
     fn component(
@@ -212,22 +221,12 @@ where
         props: Box<dyn StoredProps>,
         children: Vec<Element<P>>,
     ) -> Self {
-        let state = Box::new(());
         let body = FiberBody::Component {
             instance,
-            state,
             props,
             children,
         };
-        Self {
-            context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
-            id,
-            dirty: false,
-            sibling: None,
-            child: None,
-            parent: None,
-            body: Some(body),
-        }
+        Self::new(tx, id, body)
     }
 
     fn native(
@@ -243,15 +242,7 @@ where
             native_instance_key: None,
             children,
         };
-        Self {
-            context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
-            id,
-            dirty: false,
-            sibling: None,
-            child: None,
-            parent: None,
-            body: Some(body),
-        }
+        Self::new(tx, id, body)
     }
 
     fn children(&self) -> Vec<Element<P>> {
@@ -292,7 +283,7 @@ where
 }
 
 #[derive(Derivative)]
-#[derivative(Debug(bound = ""))]
+#[derivative(Debug(bound = ""), Clone(bound = ""))]
 enum FiberBody<P, R>
 where
     P: RenderPrimitive,
@@ -302,7 +293,6 @@ where
     Text(String, Option<R::TextInstanceKey>),
     Component {
         instance: Box<dyn AnyComponent<P>>,
-        state: Box<dyn StoredState>,
         props: Box<dyn StoredProps>,
         children: Vec<Element<P>>,
     },
@@ -612,8 +602,7 @@ where
                                 .get_mut(child)
                                 .unwrap()
                                 .native_instance_key()
-                                .unwrap()
-                                .clone(),
+                                .unwrap(),
                         )
                         .map_err(Error::RendererError)?;
                 }
@@ -665,6 +654,10 @@ where
                         } else {
                             debug!("update");
                         }
+                    },
+                    Event::ReRender {mut fibers} => {
+                        let mut container = current_container.as_mut().unwrap();
+                        self.commit(&mut fibers, current_root_id.clone().unwrap(), &mut container).expect("todo");
                     }
                 }
                 }
@@ -862,6 +855,7 @@ where
                 ),
                 body: Some(FiberBody::Root),
                 id: fiber_id,
+                alternate: None,
                 child: None,
                 parent: None,
                 sibling: None,
@@ -934,21 +928,49 @@ where
         //         Result::<_, R::Error>::Ok(())
         //     }),
         // )?;
+        let mut next_fiber_id_ = 0;
+        let mut next_fiber_id = move || {
+            warn!("this is wrong fiber id");
+            let id = next_fiber_id_;
+            next_fiber_id_ += 1;
+            FiberId(id)
+        };
+
         let new_children = self
             .fibers
             .get_mut(self.dirty_fiber_id)
             .ok_or(Error::<R::Error>::InvalidFiber)
-            .map(|f| {
+            .and_then(|f| {
                 debug!("rerendering {:?}", f);
-                let mut next_fiber_id_ = 0;
-                let mut next_fiber_id = move || {
-                    warn!("this is wrong fiber id");
-                    let id = next_fiber_id_;
-                    next_fiber_id_ += 1;
-                    FiberId(id)
-                };
-                f.render()
-            });
+
+                Ok(f.render()?)
+            })?;
+
+        debug!("new children {:?}", new_children);
+        let alternate: Fiber<P, R> = self.fibers.get(self.dirty_fiber_id).unwrap().clone();
+        let alternate_id = self.fibers.insert(alternate);
+        let mut fibers = &mut self.fibers;
+        let tx = self.component_tx.clone();
+        let dirty_fiber_id = self.dirty_fiber_id.clone();
+        let to_child = {
+            new_children.into_iter().rev().fold(
+                Result::<_, R::Error>::Ok(None),
+                move |prev, next| {
+                    let child_id = build_tree(&tx, fibers, &next, next_fiber_id.clone())?;
+                    let mut child = &mut fibers.get_mut(child_id).unwrap();
+                    child.parent = Some(alternate_id);
+                    child.sibling = prev?;
+                    Ok(Some(child_id))
+                },
+            )?
+        };
+        let mut node = self.fibers.get_mut(self.dirty_fiber_id).unwrap();
+        node.alternate = Some(alternate_id);
+        self.tx
+            .send(Event::ReRender {
+                fibers: self.fibers,
+            })
+            .unwrap();
 
         Ok(())
     }
@@ -1037,8 +1059,8 @@ where
 {
     type Error: std::error::Error;
     type Container;
-    type InstanceKey: std::fmt::Debug;
-    type TextInstanceKey: std::fmt::Debug;
+    type InstanceKey: Clone + std::fmt::Debug;
+    type TextInstanceKey: Clone + std::fmt::Debug;
     fn create_instance(
         &mut self,
         ty: &P,
