@@ -108,10 +108,9 @@ pub fn render(
     element: &sorcery::Element<Html>,
 ) -> sorcery_reconciler::Result<(), Error> {
     let renderer = Renderer::new(document);
-    let mut reconciler = sorcery_reconciler::Reconciler::new(renderer);
-    reconciler.create_container(&mut container);
+    let mut reconciler = sorcery_reconciler::Reconciler::new(renderer, container);
     let mut ctx = sorcery_reconciler::Context::new();
-    reconciler.update_container(&mut ctx, container, element)?;
+    reconciler.update_container(&mut ctx, element)?;
     wasm_bindgen_futures::spawn_local(async move {
         reconciler.run().await;
     });

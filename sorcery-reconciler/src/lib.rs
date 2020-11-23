@@ -1,3 +1,4 @@
+use bumpalo::Bump;
 use crossbeam_channel as channel;
 use derivative::Derivative;
 use generational_arena::{Arena, Index as ArenaNodeId};
@@ -32,16 +33,18 @@ pub type Result<T, E> = std::result::Result<T, Error<E>>;
 
 pub struct Reconciler<P, R>
 where
-    P: RenderPrimitive,
-    R: Renderer<P>,
+    P: RenderPrimitive + 'static,
+    R: Renderer<P> + 'static,
 {
-    next_fiber_id: u32,
+    container: R::Container,
     element_type: std::marker::PhantomData<P>,
     renderer: Arc<RefCell<R>>,
     events_rx: mpsc::UnboundedReceiver<Event<P, R>>,
     events_tx: mpsc::UnboundedSender<Event<P, R>>,
     component_events_rx: mpsc::UnboundedReceiver<ComponentUpdate>,
     component_events_tx: mpsc::UnboundedSender<ComponentUpdate>,
+    // current_tree: bumpalo::collections::Vec<Fiber<P, R>>,
+    // new_tree: bumpalo::collections::Vec<Fiber<P, R>>,
 }
 
 #[derive(Derivative)]
@@ -55,8 +58,6 @@ where
         fibers: Arena<Fiber<P, R>>,
         root_id: ArenaNodeId,
         element: Element<P>,
-        #[derivative(Debug = "ignore")]
-        container: R::Container,
     },
     ReRender {
         fibers: Arena<Fiber<P, R>>,
@@ -433,12 +434,12 @@ where
     P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
 {
-    pub fn new(renderer: R) -> Self {
+    pub fn new(renderer: R, container: R::Container) -> Self {
         let (events_tx, events_rx) = mpsc::unbounded_channel();
         let (component_events_tx, component_events_rx) = mpsc::unbounded_channel();
         Self {
+            container,
             renderer: Arc::new(RefCell::new(renderer)),
-            next_fiber_id: 0,
             element_type: std::marker::PhantomData,
             events_rx,
             events_tx,
@@ -453,7 +454,6 @@ where
         &mut self,
         fibers: &mut Arena<Fiber<P, R>>,
         root_id: ArenaNodeId,
-        container: &mut R::Container,
     ) -> Result<(), R::Error> {
         let (tx, rx) = channel::unbounded::<Update>();
         walk_fibers_mut(
@@ -534,13 +534,12 @@ where
             Ok(fiber.child)
         })?;
 
-        self.process_updates(container, fibers, rx)?;
+        self.process_updates(fibers, rx)?;
         Ok(())
     }
 
     fn process_updates(
-        &self,
-        container: &mut R::Container,
+        &mut self,
         fibers: &mut Arena<Fiber<P, R>>,
         rx: channel::Receiver<Update>,
     ) -> Result<(), R::Error> {
@@ -561,7 +560,7 @@ where
                     self.renderer
                         .borrow_mut()
                         .append_child_to_container(
-                            container,
+                            &mut self.container,
                             fibers
                                 .get_mut(child)
                                 .unwrap()
@@ -596,7 +595,6 @@ where
         debug!("running");
         let mut current_fibers: Option<Arena<Fiber<P, R>>> = None;
         let mut current_element: Option<Element<P>> = None;
-        let mut current_container: Option<R::Container> = None;
         let mut current_root_id: Option<ArenaNodeId> = None;
         loop {
             tokio::select! {
@@ -606,22 +604,19 @@ where
                     Event::Render {
                         mut fibers,
                         root_id,
-                        mut container,
                         element,
                     } => {
                         if current_fibers.is_none() {
-                            self.commit(&mut fibers, root_id, &mut container).expect("todo");
+                            self.commit(&mut fibers, root_id).expect("todo");
                             current_fibers = Some(fibers);
                             current_element = Some(element);
-                            current_container = Some(container);
                             current_root_id = Some(root_id);
                         } else {
                             debug!("update");
                         }
                     },
                     Event::ReRender {mut fibers} => {
-                        let mut container = current_container.as_mut().unwrap();
-                        self.commit(&mut fibers, current_root_id.clone().unwrap(), &mut container).expect("todo");
+                        self.commit(&mut fibers, current_root_id.clone().unwrap()).expect("todo");
                     }
                 }
                 }
@@ -642,11 +637,11 @@ where
                             fiber.update_state(pointer, value);
                             self.renderer.borrow().schedule_task(
                                 TaskPriority::Immediate,
-                                Box::new(RenderTask::<P, R>::new(
+                                Box::new(Render3Task::<P, R>::new(
                                     self.events_tx.clone(),
                                     self.component_events_tx.clone(),
-                                    current_fibers.take().unwrap(),
-                                    fiber_id
+                                    current_fibers.clone().unwrap(),
+                                    current_root_id.clone().unwrap()
                                 )),
                             );
                         }
@@ -659,16 +654,14 @@ where
     pub fn update_container(
         &mut self,
         ctx: &mut Context<P, R>,
-        container: R::Container,
         element: &Element<P>,
     ) -> Result<(), R::Error> {
         self.renderer.borrow().schedule_task(
             TaskPriority::Immediate,
-            Box::new(InitialRenderTask::<P, R>::new(
+            Box::new(RenderTask::<P, R>::new(
                 self.events_tx.clone(),
                 self.component_events_tx.clone(),
                 element.clone(),
-                container,
             )),
         );
 
@@ -763,7 +756,7 @@ where
 }
 
 type TaskResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-struct InitialRenderTask<P, R>
+struct RenderTask<P, R>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
@@ -771,10 +764,9 @@ where
     root: Element<P>,
     tx: mpsc::UnboundedSender<Event<P, R>>,
     component_tx: mpsc::UnboundedSender<ComponentUpdate>,
-    container: R::Container,
 }
 
-impl<P, R> InitialRenderTask<P, R>
+impl<P, R> RenderTask<P, R>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
@@ -783,18 +775,16 @@ where
         tx: mpsc::UnboundedSender<Event<P, R>>,
         component_tx: mpsc::UnboundedSender<ComponentUpdate>,
         root: Element<P>,
-        container: R::Container,
     ) -> Self {
         Self {
             root,
             tx,
             component_tx,
-            container,
         }
     }
 }
 
-impl<P, R> Task for InitialRenderTask<P, R>
+impl<P, R> Task for RenderTask<P, R>
 where
     P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
@@ -833,7 +823,6 @@ where
             .send(Event::Render {
                 fibers,
                 root_id,
-                container: self.container,
                 element: self.root,
             })
             .unwrap();
@@ -843,7 +832,7 @@ where
 
 type SharedFibers<P, R> = Arc<RwLock<Arena<Fiber<P, R>>>>;
 
-struct RenderTask<P, R>
+struct Render2Task<P, R>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
@@ -854,7 +843,7 @@ where
     dirty_fiber_id: ArenaNodeId,
 }
 
-impl<P, R> RenderTask<P, R>
+impl<P, R> Render2Task<P, R>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
@@ -874,7 +863,7 @@ where
     }
 }
 
-impl<P, R> Task for RenderTask<P, R>
+impl<P, R> Task for Render2Task<P, R>
 where
     P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
@@ -935,6 +924,94 @@ where
                 fibers: self.fibers,
             })
             .unwrap();
+
+        Ok(())
+    }
+}
+
+struct Render3Task<P, R>
+where
+    P: RenderPrimitive,
+    R: Renderer<P>,
+{
+    tx: mpsc::UnboundedSender<Event<P, R>>,
+    component_tx: mpsc::UnboundedSender<ComponentUpdate>,
+    fibers: Arena<Fiber<P, R>>,
+    root_fiber_id: ArenaNodeId,
+}
+
+impl<P, R> Render3Task<P, R>
+where
+    P: RenderPrimitive,
+    R: Renderer<P>,
+{
+    fn new(
+        tx: mpsc::UnboundedSender<Event<P, R>>,
+        component_tx: mpsc::UnboundedSender<ComponentUpdate>,
+        fibers: Arena<Fiber<P, R>>,
+        root_fiber_id: ArenaNodeId,
+    ) -> Self {
+        Self {
+            tx,
+            component_tx,
+            root_fiber_id,
+            fibers,
+        }
+    }
+}
+
+impl<P, R> Task for Render3Task<P, R>
+where
+    P: RenderPrimitive + 'static,
+    R: Renderer<P> + 'static,
+{
+    fn run(mut self: Box<Self>) -> TaskResult<()> {
+        debug!("rerendering {:?}", self.root_fiber_id);
+        // walk_fibers_mut(
+        //     &mut fibers,
+        //     self.root_fiber_id,
+        //     process_wrap_mut(|fiber| {
+        //         if fiber.dirty {
+        //             debug!("fiber is dirty {:?}", fiber);
+
+        //         }
+        //         Result::<_, R::Error>::Ok(())
+        //     }),
+        // )?;
+        let mut next_fiber_id_ = 0;
+        let mut next_fiber_id = move || {
+            warn!("this is wrong fiber id");
+            let id = next_fiber_id_;
+            next_fiber_id_ += 1;
+            FiberId(id)
+        };
+
+        walk_fibers_mut(
+            &mut self.fibers,
+            self.root_fiber_id,
+            process_wrap_mut(|fiber| {
+                if fiber.dirty {
+                    let new_children = fiber.render()?;
+                    let tx = self.component_tx.clone();
+                    let fibers = &mut self.fibers;
+                    let to_child = {
+                        new_children.into_iter().rev().fold(
+                            Result::<_, R::Error>::Ok(None),
+                            move |prev, next| {
+                                let child_id =
+                                    build_tree(&tx, fibers, &next, next_fiber_id.clone())?;
+                                let mut child = fibers.get_mut(child_id).unwrap();
+                                child.parent = Some(panic!());
+                                child.sibling = prev?;
+                                Ok(Some(child_id))
+                            },
+                        )?
+                    };
+                    fiber.child = to_child;
+                }
+                Result::<_, R::Error>::Ok(())
+            }),
+        )?;
 
         Ok(())
     }
