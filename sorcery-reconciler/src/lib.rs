@@ -10,6 +10,7 @@ use std::{
     any::Any,
     cell::RefCell,
     collections::{HashMap, VecDeque},
+    future::Future,
     marker::PhantomData,
     sync::Arc,
 };
@@ -43,8 +44,9 @@ where
     events_tx: mpsc::UnboundedSender<Event<P, R>>,
     component_events_rx: mpsc::UnboundedReceiver<ComponentUpdate>,
     component_events_tx: mpsc::UnboundedSender<ComponentUpdate>,
+    current_tree: Option<(Arena<Fiber<P, R>>, ArenaNodeId)>,
     // current_tree: bumpalo::collections::Vec<Fiber<P, R>>,
-    // new_tree: bumpalo::collections::Vec<Fiber<P, R>>,
+    // new_tree: bumpalo::collections::Vec<Fiber<P, R>>
 }
 
 #[derive(Derivative)]
@@ -319,15 +321,15 @@ where
 }
 
 fn process_wrap_mut<E, P, R>(
-    mut f: impl FnMut(&mut Fiber<P, R>) -> Result<(), E>,
-) -> impl FnMut(&mut Fiber<P, R>) -> Result<Option<ArenaNodeId>, E>
+    mut f: impl FnMut(&mut Fiber<P, R>, &ArenaNodeId) -> Result<(), E>,
+) -> impl FnMut(&mut Fiber<P, R>, &ArenaNodeId) -> Result<Option<ArenaNodeId>, E>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
     E: std::error::Error + 'static,
 {
-    move |fiber| {
-        f(fiber)?;
+    move |fiber, id| {
+        f(fiber, id)?;
         Ok(fiber.child)
     }
 }
@@ -383,7 +385,7 @@ where
 fn walk_fibers_mut<E, P, R>(
     arena: &mut Arena<Fiber<P, R>>,
     start: ArenaNodeId,
-    mut process: impl FnMut(&mut Fiber<P, R>) -> Result<Option<ArenaNodeId>, E>,
+    mut process: impl FnMut(&mut Fiber<P, R>, &ArenaNodeId) -> Result<Option<ArenaNodeId>, E>,
 ) -> Result<(), E>
 where
     P: RenderPrimitive,
@@ -394,7 +396,7 @@ where
     let mut current = start;
     loop {
         let child = if let Some(current_fiber) = arena.get_mut(current) {
-            process(current_fiber)?
+            process(current_fiber, &current)?
         } else {
             panic!();
         };
@@ -429,6 +431,9 @@ where
     }
 }
 
+#[derive(Debug)]
+enum DiffOp {}
+
 impl<P, R> Reconciler<P, R>
 where
     P: RenderPrimitive + 'static,
@@ -439,6 +444,7 @@ where
         let (component_events_tx, component_events_rx) = mpsc::unbounded_channel();
         Self {
             container,
+            current_tree: None,
             renderer: Arc::new(RefCell::new(renderer)),
             element_type: std::marker::PhantomData,
             events_rx,
@@ -450,18 +456,17 @@ where
 
     pub fn create_container(&mut self, base: &mut R::Container) {}
 
-    fn commit(
+    fn create_instances(
         &mut self,
         fibers: &mut Arena<Fiber<P, R>>,
         root_id: ArenaNodeId,
     ) -> Result<(), R::Error> {
-        let (tx, rx) = channel::unbounded::<Update>();
         walk_fibers_mut(
             fibers,
             root_id,
-            process_wrap_mut(|fiber| {
+            process_wrap_mut(|fiber, _| {
                 match &mut fiber.body {
-                    Some(FiberBody::Text(txt, ref mut instance_key)) => {
+                    Some(FiberBody::Text(txt, ref mut instance_key)) if instance_key.is_none() => {
                         *instance_key = Some(
                             self.renderer
                                 .borrow_mut()
@@ -474,7 +479,7 @@ where
                         instance,
                         props,
                         ..
-                    }) => {
+                    }) if native_instance_key.is_none() => {
                         *native_instance_key = Some(
                             self.renderer
                                 .borrow_mut()
@@ -487,6 +492,28 @@ where
                 Ok(())
             }),
         )?;
+        Ok(())
+    }
+
+    fn diff(
+        &self,
+        current_fibers: &mut Arena<Fiber<P, R>>,
+        current_root_id: ArenaNodeId,
+        new_fibers: &mut Arena<Fiber<P, R>>,
+        new_root_id: ArenaNodeId,
+    ) -> Vec<DiffOp> {
+        vec![]
+    }
+
+    fn commit(
+        &mut self,
+        fibers: &mut Arena<Fiber<P, R>>,
+        root_id: ArenaNodeId,
+    ) -> Result<(), R::Error> {
+        let (tx, rx) = channel::unbounded::<Update>();
+
+        self.create_instances(fibers, root_id)?;
+
         walk_fibers(&fibers, root_id, |fiber, id| {
             debug!("walk {:?}", fiber);
             match &fiber.body {
@@ -593,7 +620,6 @@ where
 
     pub async fn run(&mut self) {
         debug!("running");
-        let mut current_fibers: Option<Arena<Fiber<P, R>>> = None;
         let mut current_element: Option<Element<P>> = None;
         let mut current_root_id: Option<ArenaNodeId> = None;
         loop {
@@ -606,9 +632,9 @@ where
                         root_id,
                         element,
                     } => {
-                        if current_fibers.is_none() {
+                        if self.current_tree.is_none() {
                             self.commit(&mut fibers, root_id).expect("todo");
-                            current_fibers = Some(fibers);
+                            self.current_tree = Some((fibers, root_id));
                             current_element = Some(element);
                             current_root_id = Some(root_id);
                         } else {
@@ -625,14 +651,14 @@ where
                         ComponentUpdate::InitializeState {mut context, pointer, value} => {
                             let context = context.as_any_mut().downcast_mut::<FiberComponentContext>().unwrap();
                             debug!("SET STATE {:?}", context);
-                            let (fiber_id, mut fiber) = current_fibers.as_mut().unwrap().iter_mut().find(|(_, n)| n.id == context.id).unwrap();
+                            let (fiber_id, mut fiber) = self.current_tree.as_mut().unwrap().0.iter_mut().find(|(_, n)| n.id == context.id).unwrap();
                             debug!("fibber: {:?}", fiber);
                             fiber.init_state(pointer, value);
                         }
                         ComponentUpdate::SetState {mut context, pointer, value} => {
                             let context = context.as_any_mut().downcast_mut::<FiberComponentContext>().unwrap();
                             debug!("SET STATE {:?}", context);
-                            let (fiber_id, mut fiber) = current_fibers.as_mut().unwrap().iter_mut().find(|(_, n)| n.id == context.id).unwrap();
+                            let (fiber_id, mut fiber) = self.current_tree.as_mut().unwrap().0.iter_mut().find(|(_, n)| n.id == context.id).unwrap();
                             debug!("fibber: {:?}", fiber);
                             fiber.update_state(pointer, value);
                             self.renderer.borrow().schedule_task(
@@ -640,7 +666,7 @@ where
                                 Box::new(Render3Task::<P, R>::new(
                                     self.events_tx.clone(),
                                     self.component_events_tx.clone(),
-                                    current_fibers.clone().unwrap(),
+                                    self.current_tree.clone().unwrap().0,
                                     current_root_id.clone().unwrap()
                                 )),
                             );
@@ -986,35 +1012,75 @@ where
             FiberId(id)
         };
 
+        let component_tx = self.component_tx.clone();
+
+        let (tx, rx) = channel::unbounded::<RenderUpdate<P>>();
+
         walk_fibers_mut(
             &mut self.fibers,
             self.root_fiber_id,
-            process_wrap_mut(|fiber| {
+            process_wrap_mut(move |fiber, fiber_id| {
                 if fiber.dirty {
                     let new_children = fiber.render()?;
+                    tx.send(RenderUpdate::Update {
+                        parent: *fiber_id,
+                        new_children,
+                    })
+                    .unwrap();
+                    fiber.dirty = false;
+                }
+                Result::<_, R::Error>::Ok(())
+            }),
+        )?;
+
+        debug!("here.......");
+
+        for update in rx.try_iter() {
+            match update {
+                RenderUpdate::Update {
+                    parent,
+                    new_children,
+                } => {
+                    debug!("updating {:?}", parent);
                     let tx = self.component_tx.clone();
-                    let fibers = &mut self.fibers;
                     let to_child = {
+                        let fibers = &mut self.fibers;
                         new_children.into_iter().rev().fold(
                             Result::<_, R::Error>::Ok(None),
                             move |prev, next| {
                                 let child_id =
                                     build_tree(&tx, fibers, &next, next_fiber_id.clone())?;
                                 let mut child = fibers.get_mut(child_id).unwrap();
-                                child.parent = Some(panic!());
+                                child.parent = Some(parent);
                                 child.sibling = prev?;
                                 Ok(Some(child_id))
                             },
                         )?
                     };
+                    let fiber = self.fibers.get_mut(parent).unwrap();
                     fiber.child = to_child;
                 }
-                Result::<_, R::Error>::Ok(())
-            }),
-        )?;
+            }
+        }
+
+        self.tx
+            .send(Event::ReRender {
+                fibers: self.fibers,
+            })
+            .unwrap();
 
         Ok(())
     }
+}
+
+enum RenderUpdate<P>
+where
+    P: RenderPrimitive,
+{
+    Update {
+        parent: ArenaNodeId,
+        new_children: Vec<Element<P>>,
+    },
 }
 
 // struct ProcessMessages<P, R>
