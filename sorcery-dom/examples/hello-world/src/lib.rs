@@ -33,8 +33,10 @@ impl Component<Html> for App {
         props: &Self::Props,
         children: &[Element<Html>],
     ) -> sorcery::Result<Element<Html>> {
-        let (greeting, set_greeting) = use_state(context, "hello");
+        let (greeting, set_greeting) = use_state(context, &"hello");
         let g = "world";
+
+        debug!("greeting is {:?}", greeting);
 
         Ok(rsx! {
             <div class="test-class" on_click={move |e: &ClickEvent| {

@@ -12,7 +12,7 @@ use std::{
     marker::PhantomData,
     sync::Arc,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, trace, warn};
 
 #[derive(thiserror::Error, Debug)]
@@ -24,6 +24,8 @@ where
     RendererError(E),
     #[error(transparent)]
     Sorcery(#[from] sorcery::Error),
+    #[error("invalid fiber TODO ID")]
+    InvalidFiber(),
 }
 
 pub type Result<T, E> = std::result::Result<T, Error<E>>;
@@ -49,9 +51,10 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    InitialRender {
+    Render {
         fibers: Arena<Fiber<P, R>>,
         root_id: ArenaNodeId,
+        element: Element<P>,
         #[derivative(Debug = "ignore")]
         container: R::Container,
     },
@@ -73,6 +76,7 @@ where
     sibling: Option<ArenaNodeId>,
     child: Option<ArenaNodeId>,
     parent: Option<ArenaNodeId>,
+    dirty: bool,
 }
 
 impl<P, R> Fiber<P, R>
@@ -148,6 +152,19 @@ where
         }
         None
     }
+
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    fn init_state(&mut self, pointer: usize, value: Box<dyn StoredState>) {
+        self.context.init_state(pointer, value);
+    }
+
+    fn update_state(&mut self, pointer: usize, value: Box<dyn StoredState>) {
+        self.context.update_state(pointer, value);
+        self.mark_dirty();
+    }
 }
 
 impl<P, R> PartialEq<Fiber<P, R>> for Fiber<P, R>
@@ -180,6 +197,7 @@ where
         Self {
             context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
             id,
+            dirty: false,
             sibling: None,
             child: None,
             parent: None,
@@ -192,16 +210,19 @@ where
         id: FiberId,
         instance: Box<dyn AnyComponent<P>>,
         props: Box<dyn StoredProps>,
+        children: Vec<Element<P>>,
     ) -> Self {
         let state = Box::new(());
         let body = FiberBody::Component {
             instance,
             state,
             props,
+            children,
         };
         Self {
             context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
             id,
+            dirty: false,
             sibling: None,
             child: None,
             parent: None,
@@ -214,16 +235,18 @@ where
         id: FiberId,
         instance: P,
         props: P::Props,
+        children: Vec<Element<P>>,
     ) -> Self {
         let body = FiberBody::Native {
             instance,
             props,
             native_instance_key: None,
+            children,
         };
-        let state = Box::new(());
         Self {
             context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
             id,
+            dirty: false,
             sibling: None,
             child: None,
             parent: None,
@@ -231,15 +254,15 @@ where
         }
     }
 
-    fn render(&mut self, children: &[Element<P>]) -> sorcery::Result<Vec<Element<P>>> {
-        // let child_elements = self
-        //     .children
-        //     .iter_mut()
-        //     .map(|fiber| fiber.render())
-        //     .collect::<Result<Vec<_>>>()?
-        //     .into_iter()
-        //     .filter_map(|f| f)
-        //     .collect::<Vec<_
+    fn children(&self) -> Vec<Element<P>> {
+        match &self.body {
+            Some(FiberBody::Component { children, .. }) => children.clone(),
+            Some(FiberBody::Native { children, .. }) => children.clone(),
+            _ => vec![],
+        }
+    }
+
+    fn render(&mut self) -> sorcery::Result<Vec<Element<P>>> {
         self.context.reset();
         let children = match &self.body {
             Some(FiberBody::Root) => {
@@ -248,14 +271,17 @@ where
             Some(FiberBody::Text(_, _)) => Ok(vec![]),
             Some(FiberBody::Component {
                 instance, props, ..
-            }) => Ok(vec![instance.render(
-                &mut self.context,
-                props.as_ref(),
-                children,
-            )?]),
+            }) => {
+                let children = self.children();
+                Ok(vec![instance.render(
+                    &mut self.context,
+                    props.as_ref(),
+                    &children,
+                )?])
+            }
             Some(FiberBody::Native {
                 instance, props, ..
-            }) => Ok(instance.render(&props, children)?),
+            }) => Ok(instance.render(&props, &self.children())?),
             None => {
                 unimplemented!();
             }
@@ -278,11 +304,13 @@ where
         instance: Box<dyn AnyComponent<P>>,
         state: Box<dyn StoredState>,
         props: Box<dyn StoredProps>,
+        children: Vec<Element<P>>,
     },
     Native {
         instance: P,
         native_instance_key: Option<R::InstanceKey>,
         props: P::Props,
+        children: Vec<Element<P>>,
     },
 }
 
@@ -614,28 +642,56 @@ where
     pub async fn run(&mut self) {
         debug!("running");
         let mut current_fibers: Option<Arena<Fiber<P, R>>> = None;
+        let mut current_element: Option<Element<P>> = None;
+        let mut current_container: Option<R::Container> = None;
+        let mut current_root_id: Option<ArenaNodeId> = None;
         loop {
             tokio::select! {
                 Some(event) = self.events_rx.recv() => {
                     debug!("event: {:?}", event);
                 match event {
-                    Event::InitialRender {
+                    Event::Render {
                         mut fibers,
                         root_id,
                         mut container,
+                        element,
                     } => {
-                        self.commit(&mut fibers, root_id, &mut container).expect("todo");
-                        current_fibers = Some(fibers);
+                        if current_fibers.is_none() {
+                            self.commit(&mut fibers, root_id, &mut container).expect("todo");
+                            current_fibers = Some(fibers);
+                            current_element = Some(element);
+                            current_container = Some(container);
+                            current_root_id = Some(root_id);
+                        } else {
+                            debug!("update");
+                        }
                     }
                 }
                 }
                 Some(event) = self.component_events_rx.recv() => {
                     match event {
-                        ComponentUpdate::SetState {mut context, pointer} => {
-                            let context = context.as_any().downcast_mut::<FiberComponentContext>().unwrap();
+                        ComponentUpdate::InitializeState {mut context, pointer, value} => {
+                            let context = context.as_any_mut().downcast_mut::<FiberComponentContext>().unwrap();
                             debug!("SET STATE {:?}", context);
-                            let fiber = current_fibers.as_ref().unwrap().iter().find(|(_, n)| n.id == context.id).unwrap();
+                            let (fiber_id, mut fiber) = current_fibers.as_mut().unwrap().iter_mut().find(|(_, n)| n.id == context.id).unwrap();
                             debug!("fibber: {:?}", fiber);
+                            fiber.init_state(pointer, value);
+                        }
+                        ComponentUpdate::SetState {mut context, pointer, value} => {
+                            let context = context.as_any_mut().downcast_mut::<FiberComponentContext>().unwrap();
+                            debug!("SET STATE {:?}", context);
+                            let (fiber_id, mut fiber) = current_fibers.as_mut().unwrap().iter_mut().find(|(_, n)| n.id == context.id).unwrap();
+                            debug!("fibber: {:?}", fiber);
+                            fiber.update_state(pointer, value);
+                            self.renderer.borrow().schedule_task(
+                                TaskPriority::Immediate,
+                                Box::new(RenderTask::<P, R>::new(
+                                    self.events_tx.clone(),
+                                    self.component_events_tx.clone(),
+                                    current_fibers.take().unwrap(),
+                                    fiber_id
+                                )),
+                            );
                         }
                     }
                 }
@@ -651,7 +707,7 @@ where
     ) -> Result<(), R::Error> {
         self.renderer.borrow().schedule_task(
             TaskPriority::Immediate,
-            Box::new(RenderTask::<P, R>::new(
+            Box::new(InitialRenderTask::<P, R>::new(
                 self.events_tx.clone(),
                 self.component_events_tx.clone(),
                 element.clone(),
@@ -711,12 +767,19 @@ where
                 next_fiber_id(),
                 instance,
                 comp_element.clone_props(),
+                children.to_vec(),
             );
             Result::<_, R::Error>::Ok(fiber)
         }
         Element::Native(native) => {
             let instance = native.ty.clone();
-            let fiber = Fiber::native(tx.clone(), next_fiber_id(), instance, native.props.clone());
+            let fiber = Fiber::native(
+                tx.clone(),
+                next_fiber_id(),
+                instance,
+                native.props.clone(),
+                children.to_vec(),
+            );
             Ok(fiber)
         }
     }?;
@@ -724,7 +787,7 @@ where
     {
         let to_child = {
             let node = arena.get_mut(id).unwrap();
-            node.render(&children)
+            node.render()
                 .map_err(Error::Sorcery)?
                 .into_iter()
                 .rev()
@@ -742,7 +805,8 @@ where
     Ok(id)
 }
 
-struct RenderTask<P, R>
+type TaskResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+struct InitialRenderTask<P, R>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
@@ -753,7 +817,7 @@ where
     container: R::Container,
 }
 
-impl<P, R> RenderTask<P, R>
+impl<P, R> InitialRenderTask<P, R>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
@@ -773,9 +837,7 @@ where
     }
 }
 
-type TaskResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
-
-impl<P, R> Task for RenderTask<P, R>
+impl<P, R> Task for InitialRenderTask<P, R>
 where
     P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
@@ -793,6 +855,7 @@ where
             let fiber_id = next_fiber_id();
             let node_id = build_tree(&self.component_tx, &mut fibers, &self.root, next_fiber_id)?;
             let mut root_fiber = Fiber {
+                dirty: false,
                 context: sorcery::ComponentContext::new(
                     self.component_tx.clone(),
                     FiberComponentContext::new(fiber_id),
@@ -809,12 +872,84 @@ where
             root_id
         };
         self.tx
-            .send(Event::InitialRender {
+            .send(Event::Render {
                 fibers,
                 root_id,
                 container: self.container,
+                element: self.root,
             })
             .unwrap();
+        Ok(())
+    }
+}
+
+type SharedFibers<P, R> = Arc<RwLock<Arena<Fiber<P, R>>>>;
+
+struct RenderTask<P, R>
+where
+    P: RenderPrimitive,
+    R: Renderer<P>,
+{
+    tx: mpsc::UnboundedSender<Event<P, R>>,
+    component_tx: mpsc::UnboundedSender<ComponentUpdate>,
+    fibers: Arena<Fiber<P, R>>,
+    dirty_fiber_id: ArenaNodeId,
+}
+
+impl<P, R> RenderTask<P, R>
+where
+    P: RenderPrimitive,
+    R: Renderer<P>,
+{
+    fn new(
+        tx: mpsc::UnboundedSender<Event<P, R>>,
+        component_tx: mpsc::UnboundedSender<ComponentUpdate>,
+        fibers: Arena<Fiber<P, R>>,
+        dirty_fiber_id: ArenaNodeId,
+    ) -> Self {
+        Self {
+            tx,
+            component_tx,
+            dirty_fiber_id,
+            fibers,
+        }
+    }
+}
+
+impl<P, R> Task for RenderTask<P, R>
+where
+    P: RenderPrimitive + 'static,
+    R: Renderer<P> + 'static,
+{
+    fn run(mut self: Box<Self>) -> TaskResult<()> {
+        debug!("rerendering {:?}", self.dirty_fiber_id);
+        // walk_fibers_mut(
+        //     &mut fibers,
+        //     self.root_fiber_id,
+        //     process_wrap_mut(|fiber| {
+        //         if fiber.dirty {
+        //             debug!("fiber is dirty {:?}", fiber);
+
+        //         }
+        //         Result::<_, R::Error>::Ok(())
+        //     }),
+        // )?;
+        let new_children = self
+            .fibers
+            .get_mut(self.dirty_fiber_id)
+            .ok_or(Error::<R::Error>::InvalidFiber)
+            .map(|f| {
+                debug!("rerendering {:?}", f);
+                let mut next_fiber_id_ = 0;
+                let mut next_fiber_id = move || {
+                    warn!("this is wrong fiber id");
+                    let id = next_fiber_id_;
+                    next_fiber_id_ += 1;
+                    FiberId(id)
+                };
+                f.render()
+            });
+
         Ok(())
     }
 }

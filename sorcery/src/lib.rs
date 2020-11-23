@@ -1,15 +1,14 @@
 #![feature(associated_type_defaults)]
 
-use crossbeam_channel as channel;
 use dyn_clone::DynClone;
 pub use sorcery_codegen::component;
 use std::{
-    any::{Any, TypeId},
-    collections::HashMap,
+    any::Any,
+    borrow::Borrow,
     fmt::{self, Debug},
 };
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 pub use sorcery_macros::{rsx, Props};
 
@@ -50,9 +49,11 @@ where
     }
 }
 
-pub trait StoredState: Any {
-    fn any(&self) -> &(dyn Any + '_);
+pub trait StoredState: Any + DynClone + Send + Sync {
+    fn as_any(&self) -> &(dyn Any + '_);
 }
+
+dyn_clone::clone_trait_object!(StoredState);
 
 impl fmt::Debug for dyn StoredState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -62,9 +63,9 @@ impl fmt::Debug for dyn StoredState {
 
 impl<T> StoredState for T
 where
-    T: Any,
+    T: Any + Clone + Send + Sync,
 {
-    fn any(&self) -> &dyn Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }
@@ -233,26 +234,75 @@ impl ComponentContext {
         self.state_pointer += 1;
     }
 
-    fn state<T>(&mut self, initial: T) -> (T, impl Fn(T) + Sync + Send + Clone)
+    pub fn update_state(&mut self, pointer: usize, value: Box<dyn StoredState>) {
+        if pointer > self.state.len() {
+            warn!("bad state pointer");
+            return;
+        }
+        debug!("updpating state at pointer {:?}", pointer);
+        self.state[pointer] = HookState::State(value);
+    }
+
+    pub fn init_state(&mut self, pointer: usize, value: Box<dyn StoredState>) {
+        debug!("updpating state at pointer {:?}", pointer);
+        self.state.push(HookState::State(value));
+
+        if self.state.len() - 1 != pointer {
+            panic!("bad state set TODO");
+        }
+    }
+
+    fn current_state(&self) -> Option<&HookState> {
+        self.state.get(self.state_pointer)
+    }
+
+    fn previous_state(&self) -> Option<&HookState> {
+        self.state.get(self.state_pointer - 1)
+    }
+
+    fn state<'i, T>(
+        &'i mut self,
+        initial: &'i T,
+    ) -> (&'i T, impl Fn(T) + Sync + Send + Clone + 'static)
     where
-        T: Sync + Send,
+        T: StoredState + Sync + Send + 'static,
     {
-        debug!("state called");
-        let pointer = self.state_pointer;
-        let result = (initial, {
+        debug!("state called ({:?})", self.state);
+        self.increment_pointer();
+        let f = {
             let ctx = self.context.clone();
             let tx = self.tx.clone();
+            let pointer = self.state_pointer - 1; // todo make this a fn
             move |e: T| {
                 debug!("updating state for {:?}", std::any::type_name::<T>());
                 tx.send(ComponentUpdate::SetState {
-                    pointer,
+                    pointer: pointer,
                     context: ctx.clone(),
+                    value: Box::new(e),
                 })
                 .expect("todo");
             }
-        });
-        self.increment_pointer();
-        result
+        };
+        if let Some(state) = self.previous_state() {
+            if let HookState::State(v) = state {
+                let value = Any::downcast_ref::<T>(v.as_ref().as_any()).unwrap(); // todo
+                (value, f)
+            } else {
+                unimplemented!("invalid state");
+            }
+        } else {
+            let ctx = self.context.clone();
+            let tx = self.tx.clone();
+            let pointer = self.state_pointer - 1; // todo make this a fn
+            tx.send(ComponentUpdate::InitializeState {
+                pointer: pointer,
+                context: ctx.clone(),
+                value: dyn_clone::clone_box(initial),
+            })
+            .expect("todo");
+
+            (initial, f)
+        }
     }
 }
 
@@ -267,18 +317,29 @@ pub enum ComponentUpdate {
     SetState {
         pointer: usize,
         context: Box<dyn ComponentUpdateContext>,
+        value: Box<dyn StoredState>,
+    },
+    InitializeState {
+        pointer: usize,
+        context: Box<dyn ComponentUpdateContext>,
+        value: Box<dyn StoredState>,
     },
 }
 
 pub trait ComponentUpdateContext: Any + DynClone + Send + Sync + fmt::Debug {
-    fn as_any(&mut self) -> &mut dyn Any;
+    fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 impl<T> ComponentUpdateContext for T
 where
     T: Any + Clone + Send + Sync + fmt::Debug,
 {
-    fn as_any(&mut self) -> &mut dyn Any {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 }
@@ -291,15 +352,21 @@ dyn_clone::clone_trait_object!(ComponentUpdateContext);
 //     }
 // }
 
-#[derive()]
+#[derive(Debug)]
 enum HookState {
-    State(Box<dyn Any>),
-    Effect(Vec<Box<dyn Dep>>),
+    State(Box<dyn StoredState>),
+    // Effect(Vec<Box<dyn Dep>>),
 }
 
 pub trait Dep {
     fn as_any(&self) -> &dyn Any;
     fn compare(&self, other: &dyn Dep) -> bool;
+}
+
+impl fmt::Debug for dyn Dep {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Dep").finish()
+    }
 }
 
 impl<S: 'static + PartialEq> Dep for S {
@@ -402,9 +469,12 @@ pub trait StateUpdater<T>: Fn(T) + Send + Sync {}
 
 impl<F, T> StateUpdater<T> for F where F: Fn(T) + Send + Sync {}
 
-pub fn use_state<T>(context: &mut ComponentContext, initial: T) -> (T, impl Fn(T) + Send + Sync)
+pub fn use_state<'i, T>(
+    context: &'i mut ComponentContext,
+    initial: &'i T,
+) -> (&'i T, impl Fn(T) + Send + Sync + Clone + 'static)
 where
-    T: Any + Sync + Send,
+    T: StoredState + 'static,
 {
     context.state(initial)
 }
