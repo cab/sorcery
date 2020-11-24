@@ -145,36 +145,101 @@ where
         self.fibers.get(*self.root_fiber_index).unwrap()
     }
 
-    fn walk_diff(&self, other: &Self, walker: &DiffWalker<P, R>) -> Result<(), R::Error> {
-        fn walk_fiber<P, R>(
-            left: &Tree<P, R>,
-            left_fiber: &Fiber<P, R>,
-            right: &Tree<P, R>,
-            right_fiber: &Fiber<P, R>,
+    fn child_fibers(&self, fiber: &Fiber<P, R>) -> Vec<&Fiber<P, R>> {
+        if let Some(node_index) = fiber.node_index {
+            self.nodes
+                .get(*node_index)
+                .map(|node| node.children(&self.nodes))
+                .unwrap_or(vec![])
+                .into_iter()
+                .filter_map(|node_index| self.nodes.get(*node_index).map(|node| node.fiber))
+                .filter_map(|fiber_index| self.fibers.get(*fiber_index))
+                .collect()
+        } else {
+            vec![]
+        }
+    }
+
+    fn native_parent(&self, fiber: &Fiber<P, R>) -> Option<&Fiber<P, R>> {
+        fiber.native_parent(&self.nodes, &self.fibers)
+    }
+
+    fn walk_diff<'r>(
+        &'r self,
+        other: &'r Self,
+        walker: &'r mut DiffWalker<'r, P, R>,
+    ) -> Result<(), R::Error> {
+        fn walk_fiber<'r, P, R>(
+            left: &'r Tree<P, R>,
+            left_fiber: Option<&'r Fiber<P, R>>,
+            right: &'r Tree<P, R>,
+            right_fiber: Option<&'r Fiber<P, R>>,
+            walker: &'r mut DiffWalker<'r, P, R>,
         ) -> Result<(), R::Error>
         where
             P: RenderPrimitive,
             R: Renderer<P>,
         {
-            debug!("comparing {:?} vs {:?}", left_fiber, right_fiber);
-            if left_fiber != right_fiber {
-                debug!("NEQ");
+            match (left_fiber, right_fiber) {
+                (Some(left_fiber), Some(right_fiber)) => {
+                    debug!("comparing {:?} vs {:?}", left_fiber, right_fiber);
+                    if left_fiber != right_fiber {
+                        (walker.replace)(left_fiber, right_fiber)?;
+                    }
+                    let left_children = left.child_fibers(left_fiber);
+                    let right_children = right.child_fibers(right_fiber);
+                    debug!("{:?} -> {:?}", left_children, right_children);
+                    match (left_children, right_children) {
+                        (left_children, right_children)
+                            if left_children.len() == right_children.len() => {}
+                        (left_children, right_children) if left_children.len() == 0 => {
+                            for child in right_children {
+                                walk_fiber(left, None, right, Some(child), walker)?;
+                            }
+                        }
+                        (left_children, right_children) if right_children.len() == 0 => {
+                            unimplemented!("all rm children");
+                        }
+                        (left_children, right_children) => {
+                            unimplemented!("uneven children");
+                        }
+                    }
+                }
+                (None, Some(right_fiber)) => {
+                    (walker.append)(right_fiber, right)?;
+                    for child in right.child_fibers(right_fiber) {
+                        walk_fiber(left, None, right, Some(child), walker)?;
+                    }
+                }
+                (Some(left_fiber), None) => {
+                    unimplemented!("no right");
+                }
+                (None, None) => {
+                    // nothing to do
+                }
             }
             Ok(())
         }
         let root_fiber = self.root_fiber();
         let other_root_fiber = other.root_fiber();
-        walk_fiber(self, root_fiber, other, other_root_fiber)?;
+        walk_fiber(
+            self,
+            Some(root_fiber),
+            other,
+            Some(other_root_fiber),
+            walker,
+        )?;
         Ok(())
     }
 }
 
-struct DiffWalker<P, R>
+struct DiffWalker<'r, P, R>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    replace: Box<dyn FnMut(&Fiber<P, R>, &Fiber<P, R>) -> Result<(), R::Error>>,
+    replace: Box<dyn FnMut(&'r Fiber<P, R>, &'r Fiber<P, R>) -> Result<(), R::Error>>,
+    append: Box<dyn FnMut(&'r Fiber<P, R>, &'r Tree<P, R>) -> Result<(), R::Error>>,
 }
 
 pub struct Reconciler<P, R>
@@ -228,6 +293,7 @@ where
     R: Renderer<P>,
 {
     id: FiberId,
+    node_index: Option<NodeIndex>,
     body: Option<FiberBody<P, R>>,
     // props: Box<dyn StoredProps>,
     // state: Box<dyn StoredState>,
@@ -310,6 +376,20 @@ where
             }) => native_instance_key.as_ref(),
             _ => None,
         }
+    }
+
+    fn node<'n>(&self, nodes: &'n Arena<Node<P, R>>) -> Option<&'n Node<P, R>> {
+        self.node_index.and_then(|index| nodes.get(*index))
+    }
+
+    fn native_parent<'n>(
+        &self,
+        nodes: &'n Arena<Node<P, R>>,
+        fibers: &'n Arena<Fiber<P, R>>,
+    ) -> Option<&'n Fiber<P, R>> {
+        self.node(nodes)
+            .and_then(|node| node.native_parent(nodes, fibers))
+            .and_then(|node| node.fiber(fibers))
     }
 
     fn text_instance_key(&self) -> Option<&R::TextInstanceKey> {
@@ -472,7 +552,7 @@ where
         self.fiber(arena).map_or(false, |f| f.is_root())
     }
 
-    fn parent_native<'a>(
+    fn native_parent<'a>(
         &self,
         arena: &'a Arena<Self>,
         fibers: &'a Arena<Fiber<P, R>>,
@@ -487,16 +567,16 @@ where
         None
     }
 
-    fn parent_native_mut<'a>(
+    fn native_parent_mut<'a>(
         &self,
         arena: &'a mut Arena<Self>,
         fibers: &'a Arena<Fiber<P, R>>,
     ) -> Option<&'a mut Self> {
-        let index = self.parent_native_index(arena, fibers)?;
+        let index = self.native_parent_index(arena, fibers)?;
         arena.get_mut(*index)
     }
 
-    fn parent_native_index<'a>(
+    fn native_parent_index<'a>(
         &'a self,
         nodes: &'a Arena<Self>,
         fibers: &'a Arena<Fiber<P, R>>,
@@ -536,7 +616,7 @@ where
     R: Renderer<P>,
 {
     fn eq(&self, other: &Fiber<P, R>) -> bool {
-        self.id == other.id
+        self.body == other.body
     }
 }
 
@@ -559,9 +639,14 @@ where
     fn new(body: FiberBody<P, R>) -> Self {
         Self {
             id: FiberId::gen(),
+            node_index: None,
             dirty: false,
             body: Some(body),
         }
+    }
+
+    fn root() -> Self {
+        Self::new(FiberBody::Root)
     }
 
     fn text(text: String) -> Self {
@@ -591,7 +676,15 @@ where
         Self::new(body)
     }
 
-    fn children(&self) -> Vec<Element<P>> {
+    fn children(&self) -> Option<&[Element<P>]> {
+        match &self.body {
+            Some(FiberBody::Component { children, .. }) => Some(&children),
+            Some(FiberBody::Native { children, .. }) => Some(&children),
+            _ => None,
+        }
+    }
+
+    fn clone_children(&self) -> Vec<Element<P>> {
         match &self.body {
             Some(FiberBody::Component { children, .. }) => children.clone(),
             Some(FiberBody::Native { children, .. }) => children.clone(),
@@ -608,12 +701,12 @@ where
             Some(FiberBody::Component {
                 instance, props, ..
             }) => {
-                let children = self.children();
-                Ok(vec![instance.render(props.as_ref(), &children)?])
+                let children = self.children().unwrap_or(&[]);
+                Ok(vec![instance.render(props.as_ref(), children)?])
             }
             Some(FiberBody::Native {
                 instance, props, ..
-            }) => Ok(instance.render(&props, &self.children())?),
+            }) => Ok(instance.render(&props, self.children().unwrap_or(&[]))?),
             None => {
                 unimplemented!();
             }
@@ -653,7 +746,10 @@ where
     fn eq(&self, other: &FiberBody<P, R>) -> bool {
         warn!("IMPLEMENT PARTIALEQ FOR REAL");
         match (self, other) {
-            (FiberBody::Root, FiberBody::Root) => true,
+            (FiberBody::Root, FiberBody::Root) => {
+                // roots are always equal
+                true
+            }
             (FiberBody::Text(t, _), FiberBody::Text(t2, _)) if t == t2 => true,
             _ => false,
         }
@@ -709,16 +805,40 @@ where
         Ok(())
     }
 
-    fn commit(&mut self, mut tree: Tree<P, R>) -> Result<(), R::Error> {
+    fn commit<'r>(&'r mut self, mut tree: Tree<P, R>) -> Result<(), R::Error> {
         debug!("committing");
         self.create_instances(&mut tree)?;
-        let walker = DiffWalker {
+        let container = &mut self.container;
+        let mut walker = DiffWalker::<'r, P, R> {
             replace: Box::new(|old, new| Ok(())),
+            append: Box::new(move |child, tree| {
+                if let Some(parent) = tree.native_parent(child) {
+                    debug!("append {:?} to {:?}", child, parent);
+                    match &child.body {
+                        Some(FiberBody::Text(text, Some(text_instance))) => {}
+                        Some(FiberBody::Native {
+                            native_instance_key: Some(native_instance_key),
+                            ..
+                        }) => {
+                            if parent.is_root() {
+                                self.renderer
+                                    .append_child_to_container(&mut container, native_instance_key)
+                                    .map_err(Error::RendererError)?;
+                            } else {
+                            }
+                        }
+                        _ => {}
+                    };
+                } else {
+                    unimplemented!();
+                }
+                Ok(())
+            }),
         };
-        let current_tree = self.current_tree.as_ref().unwrap_or(&Tree::empty());
         if let Some(current_tree) = self.current_tree.as_ref() {
-            tree.walk_diff(current_tree, &walker)?;
+            current_tree.walk_diff(&tree, &mut walker)?;
         } else {
+            Tree::empty().walk_diff(&tree, &mut walker)?;
         }
         self.current_tree = Some(tree);
         Ok(())
@@ -794,6 +914,7 @@ where
     {
         let to_child = {
             let fiber = fibers.get_mut(*fiber_index).unwrap();
+            fiber.node_index = Some(node_index);
             fiber
                 .render()
                 .map_err(Error::Sorcery)?
@@ -850,11 +971,11 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    let fiber_id = FiberId::gen();
-    let mut root_fiber = Fiber::new(FiberBody::Root);
+    let mut root_fiber = Fiber::root();
     let root_fiber_index = FiberIndex(fibers.insert(root_fiber));
     let mut root_node = Node::new(root_fiber_index);
     let root_node_index = NodeIndex(nodes.insert(root_node));
+    fibers.get_mut(*root_fiber_index).unwrap().node_index = Some(root_node_index);
     (root_node_index, root_fiber_index)
 }
 
