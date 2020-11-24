@@ -227,40 +227,6 @@ where
     }
 }
 
-#[derive(Debug)]
-pub enum ComponentUpdate {
-    SetState {
-        pointer: usize,
-        context: Box<dyn ComponentUpdateContext>,
-        value: Box<dyn StoredState>,
-    },
-    InitializeState {
-        pointer: usize,
-        context: Box<dyn ComponentUpdateContext>,
-        value: Box<dyn StoredState>,
-    },
-}
-
-pub trait ComponentUpdateContext: Any + DynClone + Send + Sync + fmt::Debug {
-    fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-}
-
-impl<T> ComponentUpdateContext for T
-where
-    T: Any + Clone + Send + Sync + fmt::Debug,
-{
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
-
-dyn_clone::clone_trait_object!(ComponentUpdateContext);
-
 // impl fmt::Debug for dyn ComponentUpdateContext {
 //     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 //         f.debug_struct("ComponentUpdateContext").finish()
