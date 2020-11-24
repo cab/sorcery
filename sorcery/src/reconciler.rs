@@ -11,6 +11,7 @@ use std::{
     any::Any,
     cell::RefCell,
     collections::{HashMap, VecDeque},
+    fmt,
     future::Future,
     marker::PhantomData,
     sync::Arc,
@@ -34,8 +35,6 @@ where
 
 pub type Result<T, E> = std::result::Result<T, Error<E>>;
 
-#[derive(Derivative)]
-#[derivative(Debug(bound = ""))]
 struct Tree<P, R>
 where
     P: RenderPrimitive,
@@ -47,11 +46,35 @@ where
     root_fiber_index: FiberIndex,
 }
 
+impl<P, R> fmt::Debug for Tree<P, R>
+where
+    P: RenderPrimitive,
+    R: Renderer<P>,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut list = f.debug_list();
+        let r = &mut list;
+        self.walk(move |node, fiber, node_index, fiber_index| {
+            r.entry(fiber);
+            Ok(())
+        });
+        list.finish()?;
+        Ok(())
+    }
+}
+
 impl<P, R> Tree<P, R>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
+    fn empty() -> Self {
+        let mut nodes = Arena::new();
+        let mut fibers = Arena::new();
+        let (root_node_index, root_fiber_index) = create_root(&mut nodes, &mut fibers);
+        Self::new(nodes, root_node_index, fibers, root_fiber_index)
+    }
+
     fn new(
         nodes: Nodes<P, R>,
         root_node_index: NodeIndex,
@@ -117,6 +140,41 @@ where
             Ok(())
         })
     }
+
+    fn root_fiber(&self) -> &Fiber<P, R> {
+        self.fibers.get(*self.root_fiber_index).unwrap()
+    }
+
+    fn walk_diff(&self, other: &Self, walker: &DiffWalker<P, R>) -> Result<(), R::Error> {
+        fn walk_fiber<P, R>(
+            left: &Tree<P, R>,
+            left_fiber: &Fiber<P, R>,
+            right: &Tree<P, R>,
+            right_fiber: &Fiber<P, R>,
+        ) -> Result<(), R::Error>
+        where
+            P: RenderPrimitive,
+            R: Renderer<P>,
+        {
+            debug!("comparing {:?} vs {:?}", left_fiber, right_fiber);
+            if left_fiber != right_fiber {
+                debug!("NEQ");
+            }
+            Ok(())
+        }
+        let root_fiber = self.root_fiber();
+        let other_root_fiber = other.root_fiber();
+        walk_fiber(self, root_fiber, other, other_root_fiber)?;
+        Ok(())
+    }
+}
+
+struct DiffWalker<P, R>
+where
+    P: RenderPrimitive,
+    R: Renderer<P>,
+{
+    replace: Box<dyn FnMut(&Fiber<P, R>, &Fiber<P, R>) -> Result<(), R::Error>>,
 }
 
 pub struct Reconciler<P, R>
@@ -621,9 +679,8 @@ where
         }
     }
 
-    pub fn create_container(&mut self, base: &mut R::Container) {}
-
     fn create_instances(&mut self, tree: &mut Tree<P, R>) -> Result<(), R::Error> {
+        debug!("creating instances");
         tree.walk_with_mut_fibers(|_, fiber, _, _, _| {
             match &mut fiber.body {
                 Some(FiberBody::Text(txt, ref mut instance_key)) if instance_key.is_none() => {
@@ -653,7 +710,16 @@ where
     }
 
     fn commit(&mut self, mut tree: Tree<P, R>) -> Result<(), R::Error> {
+        debug!("committing");
         self.create_instances(&mut tree)?;
+        let walker = DiffWalker {
+            replace: Box::new(|old, new| Ok(())),
+        };
+        let current_tree = self.current_tree.as_ref().unwrap_or(&Tree::empty());
+        if let Some(current_tree) = self.current_tree.as_ref() {
+            tree.walk_diff(current_tree, &walker)?;
+        } else {
+        }
         self.current_tree = Some(tree);
         Ok(())
     }
@@ -669,7 +735,7 @@ where
                         mut tree,
                         element,
                     } => {
-
+                        self.commit(tree);
                     },
                 }
                 }
@@ -776,6 +842,22 @@ where
     }
 }
 
+fn create_root<P, R>(
+    nodes: &mut Arena<Node<P, R>>,
+    fibers: &mut Arena<Fiber<P, R>>,
+) -> (NodeIndex, FiberIndex)
+where
+    P: RenderPrimitive,
+    R: Renderer<P>,
+{
+    let fiber_id = FiberId::gen();
+    let mut root_fiber = Fiber::new(FiberBody::Root);
+    let root_fiber_index = FiberIndex(fibers.insert(root_fiber));
+    let mut root_node = Node::new(root_fiber_index);
+    let root_node_index = NodeIndex(nodes.insert(root_node));
+    (root_node_index, root_fiber_index)
+}
+
 #[async_trait(?Send)]
 impl<P, R> LocalTask for RenderTask<P, R>
 where
@@ -787,14 +869,10 @@ where
         let mut nodes = Arena::<Node<P, R>>::new();
         let mut fibers = Arena::<Fiber<P, R>>::new();
         let tree = {
-            let fiber_id = FiberId::gen();
             let node_index = build_tree(&mut nodes, &mut fibers, &self.root)?;
-            let mut root_fiber = Fiber::new(FiberBody::Root);
-            let root_fiber_index = FiberIndex(fibers.insert(root_fiber));
-
-            let mut root_node = Node::new(root_fiber_index);
+            let (root_node_index, root_fiber_index) = create_root(&mut nodes, &mut fibers);
+            let root_node = nodes.get_mut(*root_node_index).unwrap();
             root_node.child = Some(node_index);
-            let root_node_index = NodeIndex(nodes.insert(root_node));
             nodes.get_mut(*node_index).unwrap().parent = Some(root_node_index);
             Tree::new(nodes, root_node_index, fibers, root_fiber_index)
         };
