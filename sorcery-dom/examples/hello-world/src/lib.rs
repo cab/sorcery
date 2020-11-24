@@ -1,5 +1,5 @@
 use sorcery::{rsx, use_state, Component, Element};
-use sorcery_dom::{render, ClickEvent, Html, HtmlContext};
+use sorcery_dom::{render, ClickEvent, Html};
 use tracing::debug;
 use wasm_bindgen::prelude::*;
 

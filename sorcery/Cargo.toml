@@ -12,6 +12,7 @@ default = ["rsx"]
 rsx = ["sorcery-macros/rsx"]
 
 [dependencies]
+async-trait = '^0.1'
 bumpalo = {version = "3.4.0", features = ["collections"]}
 crossbeam-channel = "^0.5"
 derivative = "^2.0"

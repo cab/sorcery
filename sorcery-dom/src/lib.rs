@@ -2,7 +2,7 @@ use dyn_clone::DynClone;
 use generational_arena::{Arena, Index as ArenaIndex};
 use gloo::{events::EventListener, timers::callback::Timeout};
 use sorcery::{
-    reconciler::{self, Reconciler, Task, TaskPriority},
+    reconciler::{self, LocalTask, Reconciler, Task, TaskPriority},
     Props, RenderPrimitive, StoredProps,
 };
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
@@ -89,21 +89,6 @@ impl Renderer {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct HtmlContext {}
-
-impl Default for HtmlContext {
-    fn default() -> Self {
-        Self {}
-    }
-}
-
-impl reconciler::RendererContext for HtmlContext {
-    fn context_for() -> Self {
-        Self {}
-    }
-}
-
 pub fn render(
     document: Document,
     mut container: Element,
@@ -111,8 +96,7 @@ pub fn render(
 ) -> reconciler::Result<(), Error> {
     let renderer = Renderer::new(document);
     let mut reconciler = reconciler::Reconciler::new(renderer, container);
-    let mut ctx = reconciler::Context::new();
-    reconciler.update_container(&mut ctx, element)?;
+    reconciler.render(element)?;
     wasm_bindgen_futures::spawn_local(async move {
         reconciler.run().await;
     });
@@ -130,23 +114,60 @@ impl reconciler::Renderer<Html> for Renderer {
     type TextInstanceKey = ArenaIndex;
     type Error = Error;
 
-    fn schedule_task(&self, priority: TaskPriority, task: Box<dyn Task>) {
+    fn schedule_task(
+        &self,
+        priority: TaskPriority,
+        task: Box<dyn Task>,
+    ) -> std::result::Result<(), Self::Error> {
         match priority {
             TaskPriority::Immediate => {
-                task.run().unwrap();
+                wasm_bindgen_futures::spawn_local(async move {
+                    task.run().await.unwrap();
+                });
             }
             TaskPriority::Idle => {
                 web_sys::window()
                     .unwrap()
                     .request_idle_callback(
                         Closure::once_into_js(move || {
-                            task.run().unwrap();
+                            wasm_bindgen_futures::spawn_local(async move {
+                                task.run().await.unwrap();
+                            });
                         })
                         .unchecked_ref(),
                     )
                     .unwrap();
             }
-        }
+        };
+        Ok(())
+    }
+
+    fn schedule_local_task(
+        &self,
+        priority: TaskPriority,
+        task: Box<dyn LocalTask>,
+    ) -> std::result::Result<(), Self::Error> {
+        match priority {
+            TaskPriority::Immediate => {
+                wasm_bindgen_futures::spawn_local(async move {
+                    task.run().await.unwrap();
+                });
+            }
+            TaskPriority::Idle => {
+                web_sys::window()
+                    .unwrap()
+                    .request_idle_callback(
+                        Closure::once_into_js(move || {
+                            wasm_bindgen_futures::spawn_local(async move {
+                                task.run().await.unwrap();
+                            });
+                        })
+                        .unchecked_ref(),
+                    )
+                    .unwrap();
+            }
+        };
+        Ok(())
     }
 
     fn create_instance(
