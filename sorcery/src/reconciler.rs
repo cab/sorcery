@@ -164,21 +164,27 @@ where
         fiber.native_parent(&self.nodes, &self.fibers)
     }
 
-    fn walk_diff<'r>(
-        &'r self,
-        other: &'r Self,
-        walker: &'r mut DiffWalker<'r, P, R>,
-    ) -> Result<(), R::Error> {
-        fn walk_fiber<'r, P, R>(
-            left: &'r Tree<P, R>,
-            left_fiber: Option<&'r Fiber<P, R>>,
-            right: &'r Tree<P, R>,
-            right_fiber: Option<&'r Fiber<P, R>>,
-            walker: &'r mut DiffWalker<'r, P, R>,
+    fn walk_diff<RF, AF>(
+        &self,
+        other: &Self,
+        walker: &mut DiffWalker<P, R, RF, AF>,
+    ) -> Result<(), R::Error>
+    where
+        RF: FnMut(&Fiber<P, R>, &Fiber<P, R>) -> Result<(), R::Error>,
+        AF: FnMut(&Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+    {
+        fn walk_fiber<P, R, RF, AF>(
+            left: &Tree<P, R>,
+            left_fiber: Option<&Fiber<P, R>>,
+            right: &Tree<P, R>,
+            right_fiber: Option<&Fiber<P, R>>,
+            walker: &mut DiffWalker<P, R, RF, AF>,
         ) -> Result<(), R::Error>
         where
             P: RenderPrimitive,
             R: Renderer<P>,
+            RF: FnMut(&Fiber<P, R>, &Fiber<P, R>) -> Result<(), R::Error>,
+            AF: FnMut(&Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
         {
             match (left_fiber, right_fiber) {
                 (Some(left_fiber), Some(right_fiber)) => {
@@ -233,13 +239,17 @@ where
     }
 }
 
-struct DiffWalker<'r, P, R>
+struct DiffWalker<P, R, RF, AF>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
+    RF: FnMut(&Fiber<P, R>, &Fiber<P, R>) -> Result<(), R::Error>,
+    AF: FnMut(&Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
 {
-    replace: Box<dyn FnMut(&'r Fiber<P, R>, &'r Fiber<P, R>) -> Result<(), R::Error>>,
-    append: Box<dyn FnMut(&'r Fiber<P, R>, &'r Tree<P, R>) -> Result<(), R::Error>>,
+    replace: RF,
+    append: AF,
+    p: PhantomData<P>,
+    r: PhantomData<R>,
 }
 
 pub struct Reconciler<P, R>
@@ -248,7 +258,7 @@ where
     R: Renderer<P> + 'static,
 {
     container: R::Container,
-    renderer: R,
+    renderer: Arc<RefCell<R>>,
     events_rx: mpsc::UnboundedReceiver<Event<P, R>>,
     events_tx: mpsc::UnboundedSender<Event<P, R>>,
     component_events_rx: mpsc::UnboundedReceiver<ComponentUpdate>,
@@ -766,7 +776,7 @@ where
         let (component_events_tx, component_events_rx) = mpsc::unbounded_channel();
         Self {
             container,
-            renderer,
+            renderer: Arc::new(RefCell::new(renderer)),
             events_rx,
             events_tx,
             component_events_rx,
@@ -782,6 +792,7 @@ where
                 Some(FiberBody::Text(txt, ref mut instance_key)) if instance_key.is_none() => {
                     *instance_key = Some(
                         self.renderer
+                            .borrow_mut()
                             .create_text_instance(&txt)
                             .map_err(Error::RendererError)?,
                     );
@@ -794,6 +805,7 @@ where
                 }) if native_instance_key.is_none() => {
                     *native_instance_key = Some(
                         self.renderer
+                            .borrow_mut()
                             .create_instance(instance, props)
                             .map_err(Error::RendererError)?,
                     );
@@ -808,23 +820,46 @@ where
     fn commit<'r>(&'r mut self, mut tree: Tree<P, R>) -> Result<(), R::Error> {
         debug!("committing");
         self.create_instances(&mut tree)?;
-        let container = &mut self.container;
-        let mut walker = DiffWalker::<'r, P, R> {
-            replace: Box::new(|old, new| Ok(())),
-            append: Box::new(move |child, tree| {
+        let mut container = &mut self.container;
+        let renderer = self.renderer.clone();
+        let mut walker = DiffWalker {
+            p: PhantomData,
+            r: PhantomData,
+            replace: |old, new| Ok(()),
+            append: move |child, tree| {
                 if let Some(parent) = tree.native_parent(child) {
                     debug!("append {:?} to {:?}", child, parent);
                     match &child.body {
-                        Some(FiberBody::Text(text, Some(text_instance))) => {}
+                        Some(FiberBody::Text(text, Some(text_instance_key))) => {
+                            if parent.is_root() {
+                                unimplemented!();
+                            } else {
+                                renderer
+                                    .borrow_mut()
+                                    .append_text_to_parent(
+                                        parent.native_instance_key().unwrap(),
+                                        text_instance_key,
+                                    )
+                                    .map_err(Error::RendererError)?;
+                            }
+                        }
                         Some(FiberBody::Native {
                             native_instance_key: Some(native_instance_key),
                             ..
                         }) => {
                             if parent.is_root() {
-                                self.renderer
+                                renderer
+                                    .borrow_mut()
                                     .append_child_to_container(&mut container, native_instance_key)
                                     .map_err(Error::RendererError)?;
                             } else {
+                                renderer
+                                    .borrow_mut()
+                                    .append_child_to_parent(
+                                        parent.native_instance_key().unwrap(),
+                                        native_instance_key,
+                                    )
+                                    .map_err(Error::RendererError)?;
                             }
                         }
                         _ => {}
@@ -833,7 +868,7 @@ where
                     unimplemented!();
                 }
                 Ok(())
-            }),
+            },
         };
         if let Some(current_tree) = self.current_tree.as_ref() {
             current_tree.walk_diff(&tree, &mut walker)?;
@@ -868,6 +903,7 @@ where
 
     pub fn render(&mut self, element: &Element<P>) -> Result<(), R::Error> {
         self.renderer
+            .borrow_mut()
             .schedule_local_task(
                 TaskPriority::Immediate,
                 Box::new(RenderTask::<P, R>::new(
