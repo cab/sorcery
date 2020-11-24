@@ -530,26 +530,25 @@ where
             if current != new {
                 ops.push(DiffOp::Remove { id: *current_id });
                 ops.push(DiffOp::Append { id: *new_id });
-            } else {
-                let current_children = current.child_fibers(current_fibers);
-                let new_children = new.child_fibers(new_fibers);
-                if current_children.len() == new_children.len() {
-                    for index in 0..new_children.len() {
-                        let current_index = current_children[index];
-                        let current_root = current_fibers.get(current_index).unwrap();
-                        let new_index = new_children[index];
-                        let new_root = new_fibers.get(new_index).unwrap();
-                        diff_fiber(
-                            current_fibers,
-                            (current_root, &current_index),
-                            new_fibers,
-                            (new_root, &new_index),
-                            ops,
-                        );
-                    }
-                } else {
-                    unimplemented!()
+            }
+            let current_children = current.child_fibers(current_fibers);
+            let new_children = new.child_fibers(new_fibers);
+            if current_children.len() == new_children.len() {
+                for index in 0..new_children.len() {
+                    let current_index = current_children[index];
+                    let current_root = current_fibers.get(current_index).unwrap();
+                    let new_index = new_children[index];
+                    let new_root = new_fibers.get(new_index).unwrap();
+                    diff_fiber(
+                        current_fibers,
+                        (current_root, &current_index),
+                        new_fibers,
+                        (new_root, &new_index),
+                        ops,
+                    );
                 }
+            } else {
+                unimplemented!()
             }
         };
         let mut ops = Vec::new();
@@ -581,7 +580,7 @@ where
 
         debug!("DIFF {:?}", diff);
 
-        if diff.is_empty() {
+        if self.current_tree.is_none() {
             walk_fibers(&fibers, root_id, |fiber, id| {
                 match &fiber.body {
                     Some(FiberBody::Text(text, Some(text_instance))) => {
@@ -676,12 +675,16 @@ where
                             if let Some(parent) = fiber.parent_native(&fibers) {
                                 if parent.is_root() {
                                     match &fiber.body {
-                                        Some(FiberBody::Text(text, Some(text_instance))) => {}
+                                        Some(FiberBody::Text(text, Some(text_instance))) => {
+                                            unimplemented!();
+                                            // tx.send(Update::AppendTextToContainer { text: id })
+                                            //     .unwrap();
+                                        }
                                         Some(FiberBody::Native {
                                             native_instance_key,
                                             ..
                                         }) => {
-                                            tx.send(Update::RemoveChildFromContainer { child: id })
+                                            tx.send(Update::AppendChildToContainer { child: id })
                                                 .unwrap();
                                         }
                                         _ => {
@@ -690,12 +693,18 @@ where
                                     };
                                 } else {
                                     match &fiber.body {
-                                        Some(FiberBody::Text(text, Some(text_instance))) => {}
+                                        Some(FiberBody::Text(text, Some(text_instance))) => {
+                                            tx.send(Update::AppendTextToParent {
+                                                parent: fiber.parent_native_id(&fibers).unwrap(),
+                                                text: id,
+                                            })
+                                            .unwrap();
+                                        }
                                         Some(FiberBody::Native {
                                             native_instance_key,
                                             ..
                                         }) => {
-                                            tx.send(Update::RemoveChildFromParent {
+                                            tx.send(Update::AppendChildToParent {
                                                 parent: fiber.parent_native_id(&fibers).unwrap(),
                                                 child: id,
                                             })
@@ -1330,6 +1339,7 @@ enum Update {
         parent: ArenaNodeId,
         child: ArenaNodeId,
     },
+
     RemoveChildFromParent {
         parent: ArenaNodeId,
         child: ArenaNodeId,
