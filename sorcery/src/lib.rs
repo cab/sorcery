@@ -206,110 +206,6 @@ where
     }
 }
 
-#[derive(Clone)]
-pub struct ComponentContext {
-    state_pointer: std::cell::Cell<usize>,
-    state: Vec<HookState>,
-    context: Box<dyn ComponentUpdateContext>,
-    tx: mpsc::UnboundedSender<ComponentUpdate>,
-}
-
-impl ComponentContext {
-    pub fn new<I>(tx: mpsc::UnboundedSender<ComponentUpdate>, context: I) -> Self
-    where
-        I: ComponentUpdateContext,
-    {
-        Self {
-            state: vec![],
-            state_pointer: std::cell::Cell::new(0),
-            context: Box::new(context),
-            tx,
-        }
-    }
-
-    pub fn reset(&mut self) {
-        self.state_pointer.set(0);
-    }
-
-    fn increment_pointer(&self) {
-        self.state_pointer.set(self.state_pointer.get() + 1);
-    }
-
-    pub fn update_state(&mut self, pointer: usize, value: Box<dyn StoredState>) {
-        if pointer > self.state.len() {
-            warn!("bad state pointer");
-            return;
-        }
-        debug!("updpating state at pointer {:?}", pointer);
-        self.state[pointer] = HookState::State(value);
-    }
-
-    pub fn init_state(&mut self, pointer: usize, value: Box<dyn StoredState>) {
-        debug!("updpating state at pointer {:?}", pointer);
-        self.state.push(HookState::State(value));
-
-        if self.state.len() - 1 != pointer {
-            panic!("bad state set TODO");
-        }
-    }
-
-    fn current_state(&self) -> Option<&HookState> {
-        self.state.get(self.state_pointer.get())
-    }
-
-    fn previous_state(&self) -> Option<&HookState> {
-        self.state.get(self.state_pointer.get() - 1)
-    }
-
-    fn state<'i, T>(&'i self, initial: &'i T) -> (&'i T, impl Fn(T) + Sync + Send + Clone + 'static)
-    where
-        T: StoredState + Sync + Send + 'static,
-    {
-        debug!("state called ({:?})", self.state);
-        self.increment_pointer();
-        let f = {
-            let ctx = self.context.clone();
-            let tx = self.tx.clone();
-            let pointer = self.state_pointer.get() - 1; // todo make this a fn
-            move |e: T| {
-                debug!("updating state for {:?}", std::any::type_name::<T>());
-                tx.send(ComponentUpdate::SetState {
-                    pointer: pointer,
-                    context: ctx.clone(),
-                    value: Box::new(e),
-                })
-                .expect("todo");
-            }
-        };
-        if let Some(state) = self.previous_state() {
-            if let HookState::State(v) = state {
-                let value = Any::downcast_ref::<T>(v.as_ref().as_any()).unwrap(); // todo
-                (value, f)
-            } else {
-                unimplemented!("invalid state");
-            }
-        } else {
-            let ctx = self.context.clone();
-            let tx = self.tx.clone();
-            let pointer = self.state_pointer.get() - 1; // todo make this a fn
-            tx.send(ComponentUpdate::InitializeState {
-                pointer: pointer,
-                context: ctx.clone(),
-                value: dyn_clone::clone_box(initial),
-            })
-            .expect("todo");
-
-            (initial, f)
-        }
-    }
-}
-
-impl fmt::Debug for ComponentContext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ComponentContext.TODO").finish()
-    }
-}
-
 #[derive(Debug)]
 pub enum ComponentUpdate {
     SetState {
@@ -388,12 +284,7 @@ where
     fn new(props: &dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>
     where
         Self: Sized;
-    fn render(
-        &self,
-        context: &mut ComponentContext,
-        props: &dyn StoredProps,
-        children: &[Element<T>],
-    ) -> Result<Element<T>>;
+    fn render(&self, props: &dyn StoredProps, children: &[Element<T>]) -> Result<Element<T>>;
 }
 
 dyn_clone::clone_trait_object!(<T> AnyComponent<T>);
@@ -419,12 +310,7 @@ where
     fn new(props: &Self::Props) -> Self
     where
         Self: Sized;
-    fn render(
-        &self,
-        context: &mut ComponentContext,
-        props: &Self::Props,
-        children: &[Element<T>],
-    ) -> Result<Element<T>>;
+    fn render(&self, props: &Self::Props, children: &[Element<T>]) -> Result<Element<T>>;
 }
 
 impl<C, P, T> AnyComponent<T> for C
@@ -445,14 +331,9 @@ where
         Ok(Box::new(C::new(props)) as Box<dyn AnyComponent<T>>)
     }
 
-    fn render(
-        &self,
-        context: &mut ComponentContext,
-        props: &dyn StoredProps,
-        children: &[Element<T>],
-    ) -> Result<Element<T>> {
+    fn render(&self, props: &dyn StoredProps, children: &[Element<T>]) -> Result<Element<T>> {
         let props = props.any().downcast_ref::<P>().ok_or(Error::InvalidProps)?;
-        C::render(self, context, props, children)
+        C::render(self, props, children)
     }
 }
 
@@ -465,17 +346,14 @@ impl From<u32> for ComponentId {
     }
 }
 
-pub fn use_state<'i, T>(
-    context: &'i ComponentContext,
-    initial: &'i T,
-) -> (&'i T, impl Fn(T) + Send + Sync + Clone + 'static)
+pub fn use_state<'i, T>(initial: &'i T) -> (&'i T, impl Fn(T) + Send + Sync + Clone + 'static)
 where
     T: StoredState + 'static,
 {
-    context.state(initial)
+    (initial, |t: T| {})
 }
 
-pub fn use_effect(context: &mut ComponentContext, f: impl Fn()) {}
+pub fn use_effect(f: impl Fn()) {}
 
 #[cfg(test)]
 mod test {
@@ -483,7 +361,7 @@ mod test {
     mod sorcery {
         pub use super::super::*;
     }
-    use super::{component, use_effect, use_state, Component, ComponentContext, Key, Result};
+    use super::{component, use_effect, use_state, Component, Key, Result};
 
     struct TestElement {}
 

@@ -1,6 +1,6 @@
 use crate::{
-    AnyComponent, Component, ComponentContext, ComponentElement, ComponentId, ComponentUpdate, Dep,
-    Element, Key, NativeElement, RenderPrimitive, StoredProps, StoredState,
+    AnyComponent, Component, ComponentElement, ComponentId, ComponentUpdate, Dep, Element, Key,
+    NativeElement, RenderPrimitive, StoredProps, StoredState,
 };
 use bumpalo::Bump;
 use crossbeam_channel as channel;
@@ -84,7 +84,10 @@ where
     R: Renderer<P>,
 {
     id: FiberId,
-    context: crate::ComponentContext,
+    // props: Box<dyn StoredProps>,
+    // state: Box<dyn StoredState>,
+    // children: Vec<Element<P>>,
+
     // this id points to the other tree
     alternate: Option<ArenaNodeId>,
     body: Option<FiberBody<P, R>>,
@@ -172,15 +175,6 @@ where
         self.dirty = true;
     }
 
-    fn init_state(&mut self, pointer: usize, value: Box<dyn StoredState>) {
-        self.context.init_state(pointer, value);
-    }
-
-    fn update_state(&mut self, pointer: usize, value: Box<dyn StoredState>) {
-        self.context.update_state(pointer, value);
-        self.mark_dirty();
-    }
-
     fn child_fibers(&self, fibers: &Arena<Fiber<P, R>>) -> Vec<ArenaNodeId> {
         let mut ids = vec![];
         if let Some(first) = self.child {
@@ -226,7 +220,6 @@ where
 {
     fn new(tx: mpsc::UnboundedSender<ComponentUpdate>, id: FiberId, body: FiberBody<P, R>) -> Self {
         Self {
-            context: crate::ComponentContext::new(tx, FiberComponentContext::new(id)),
             id,
             dirty: false,
             sibling: None,
@@ -281,7 +274,6 @@ where
     }
 
     fn render(&mut self) -> crate::Result<Vec<Element<P>>> {
-        self.context.reset();
         let children = match &self.body {
             Some(FiberBody::Root) => {
                 unimplemented!("root");
@@ -291,11 +283,7 @@ where
                 instance, props, ..
             }) => {
                 let children = self.children();
-                Ok(vec![instance.render(
-                    &mut self.context,
-                    props.as_ref(),
-                    &children,
-                )?])
+                Ok(vec![instance.render(props.as_ref(), &children)?])
             }
             Some(FiberBody::Native {
                 instance, props, ..
@@ -862,33 +850,7 @@ where
                 }
                 }
                 Some(event) = self.component_events_rx.recv() => {
-                    match event {
-                        ComponentUpdate::InitializeState {mut context, pointer, value} => {
-                            let context = context.as_any_mut().downcast_mut::<FiberComponentContext>().unwrap();
-                            debug!("SET STATE {:?}", context);
-                            if let Some((fiber_id, mut fiber)) = self.current_tree.as_mut().unwrap().0.iter_mut().find(|(_, n)| n.id == context.id) {
-                            fiber.init_state(pointer, value);
-                            } else {
-                                error!("fiber not found");
-                            }
-                        }
-                        ComponentUpdate::SetState {mut context, pointer, value} => {
-                            let context = context.as_any_mut().downcast_mut::<FiberComponentContext>().unwrap();
-                            debug!("SET STATE {:?}", context);
-                            let (fiber_id, mut fiber) = self.current_tree.as_mut().unwrap().0.iter_mut().find(|(_, n)| n.id == context.id).unwrap();
-                            debug!("fibber: {:?}", fiber);
-                            fiber.update_state(pointer, value);
-                            self.renderer.borrow().schedule_task(
-                                TaskPriority::Immediate,
-                                Box::new(Render3Task::<P, R>::new(
-                                    self.events_tx.clone(),
-                                    self.component_events_tx.clone(),
-                                    self.current_tree.clone().unwrap().0,
-                                    current_root_id.clone().unwrap()
-                                )),
-                            );
-                        }
-                    }
+                    unimplemented!();
                 }
             };
         }
@@ -1037,10 +999,6 @@ where
             let node_id = build_tree(&self.component_tx, &mut fibers, &self.root)?;
             let mut root_fiber = Fiber {
                 dirty: false,
-                context: crate::ComponentContext::new(
-                    self.component_tx.clone(),
-                    FiberComponentContext::new(fiber_id),
-                ),
                 body: Some(FiberBody::Root),
                 id: fiber_id,
                 alternate: None,
