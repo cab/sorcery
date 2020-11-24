@@ -172,6 +172,11 @@ impl sorcery_reconciler::Renderer<Html> for Renderer {
             // on_click.forget();
             // element.add_event_listener_with_callback("click", &Closure::wrap(f))?;
         }
+
+        if let Some(style) = &props.style {
+            element.set_attribute("style", style)?;
+        }
+
         let id = self.nodes.insert(element.unchecked_into());
         Ok(id)
     }
@@ -219,6 +224,7 @@ impl sorcery_reconciler::Renderer<Html> for Renderer {
         child: &Self::InstanceKey,
     ) -> Result<()> {
         let (parent, child) = self.nodes.get2_mut(*parent, *child);
+        debug!("requested to remove {:?} from {:?}", child, parent);
         parent.unwrap().remove_child(child.unwrap())?;
         Ok(())
     }
@@ -229,6 +235,7 @@ impl sorcery_reconciler::Renderer<Html> for Renderer {
         child: &Self::InstanceKey,
     ) -> Result<()> {
         let node = self.nodes.get(*child).unwrap();
+        debug!("requested to remove {:?} from container", node);
         container.remove_child(node)?;
         Ok(())
     }

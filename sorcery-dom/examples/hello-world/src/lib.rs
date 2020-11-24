@@ -41,15 +41,15 @@ impl Component<Html> for App {
         debug!("greeting is {:?}", greeting);
 
         Ok(rsx! {
-            <div class="test-class" on_click={{ let greeting = greeting.to_owned(); let counter = *counter; move |e: &ClickEvent| {
+            <div class="test-class"><span on_click={{ let greeting = greeting.to_owned(); let counter = *counter; move |e: &ClickEvent| {
                 // debug!("clicked from rsx ({:?}): {:?}", g, e.native);
-                if &greeting == &"hello" {
-                    set_greeting("goodbye");
-                } else {
-                    set_greeting("hello");
-                }
+                // if &greeting == &"hello" {
+                //     set_greeting("goodbye");
+                // } else {
+                //     set_greeting("hello");
+                // }
                 set_counter(counter + 1);
-            }}}>{&greeting} " (" {counter} ") "
+            }}}>{&greeting}</span> " (" {counter} ") "
                 <span key="blue">
                     <Blue {g} />
                 </span>
@@ -77,8 +77,11 @@ impl Component<Html> for Blue {
         props: &Self::Props,
         children: &[Element<Html>],
     ) -> sorcery::Result<Element<Html>> {
+        let (counter, set_counter) = use_state(context, &0);
         Ok(rsx! {
-            <span style="color: blue">{props}</span>
+            <span style="color: blue"><span on_click={{  let counter = *counter; move |e: &ClickEvent| {
+                set_counter(counter + 1);
+            }}}>{props}</span> " (" {counter} ")"</span>
         })
     }
 }

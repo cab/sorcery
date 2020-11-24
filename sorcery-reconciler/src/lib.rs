@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, trace, warn};
+use tracing::{debug, error, trace, warn};
 use uuid::Uuid;
 
 #[derive(thiserror::Error, Debug)]
@@ -866,8 +866,11 @@ where
                         ComponentUpdate::InitializeState {mut context, pointer, value} => {
                             let context = context.as_any_mut().downcast_mut::<FiberComponentContext>().unwrap();
                             debug!("SET STATE {:?}", context);
-                            let (fiber_id, mut fiber) = self.current_tree.as_mut().unwrap().0.iter_mut().find(|(_, n)| n.id == context.id).unwrap();
+                            if let Some((fiber_id, mut fiber)) = self.current_tree.as_mut().unwrap().0.iter_mut().find(|(_, n)| n.id == context.id) {
                             fiber.init_state(pointer, value);
+                            } else {
+                                error!("fiber not found");
+                            }
                         }
                         ComponentUpdate::SetState {mut context, pointer, value} => {
                             let context = context.as_any_mut().downcast_mut::<FiberComponentContext>().unwrap();
