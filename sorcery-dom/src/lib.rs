@@ -211,6 +211,26 @@ impl sorcery_reconciler::Renderer<Html> for Renderer {
         parent.unwrap().append_child(&child.unwrap())?;
         Ok(())
     }
+
+    fn remove_child_from_parent<'r>(
+        &mut self,
+        parent: &Self::InstanceKey,
+        child: &Self::InstanceKey,
+    ) -> Result<()> {
+        let (parent, child) = self.nodes.get2_mut(*parent, *child);
+        unimplemented!();
+        Ok(())
+    }
+
+    fn remove_child_from_container(
+        &mut self,
+        container: &mut Self::Container,
+        child: &Self::InstanceKey,
+    ) -> Result<()> {
+        let node = self.nodes.get(*child).unwrap();
+        container.remove_child(node)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -78,6 +78,7 @@ where
 {
     id: FiberId,
     context: sorcery::ComponentContext,
+    // this id points to the other tree
     alternate: Option<ArenaNodeId>,
     body: Option<FiberBody<P, R>>,
     sibling: Option<ArenaNodeId>,
@@ -171,6 +172,22 @@ where
     fn update_state(&mut self, pointer: usize, value: Box<dyn StoredState>) {
         self.context.update_state(pointer, value);
         self.mark_dirty();
+    }
+
+    fn child_fibers(&self, fibers: &Arena<Fiber<P, R>>) -> Vec<ArenaNodeId> {
+        let mut ids = vec![];
+        if let Some(first) = self.child {
+            let mut current = Some(first);
+            loop {
+                if let Some(node) = current.and_then(|id| fibers.get(id)) {
+                    ids.push(current.unwrap());
+                    current = node.sibling;
+                } else {
+                    break;
+                }
+            }
+        }
+        ids
     }
 }
 
@@ -432,7 +449,10 @@ where
 }
 
 #[derive(Debug)]
-enum DiffOp {}
+enum DiffOp {
+    Remove { id: ArenaNodeId },
+    Append { id: ArenaNodeId },
+}
 
 impl<P, R> Reconciler<P, R>
 where
@@ -495,85 +515,217 @@ where
         Ok(())
     }
 
-    fn diff(
-        &self,
-        current_fibers: &mut Arena<Fiber<P, R>>,
-        current_root_id: ArenaNodeId,
-        new_fibers: &mut Arena<Fiber<P, R>>,
-        new_root_id: ArenaNodeId,
-    ) -> Vec<DiffOp> {
-        vec![]
+    fn diff(&self, new_fibers: &Arena<Fiber<P, R>>, new_root_id: ArenaNodeId) -> Vec<DiffOp> {
+        fn diff_fiber<P, R>(
+            current_fibers: &Arena<Fiber<P, R>>,
+            (current, current_id): (&Fiber<P, R>, &ArenaNodeId),
+            new_fibers: &Arena<Fiber<P, R>>,
+            (new, new_id): (&Fiber<P, R>, &ArenaNodeId),
+            ops: &mut Vec<DiffOp>,
+        ) where
+            P: RenderPrimitive,
+            R: Renderer<P>,
+        {
+            debug!("comparing {:?} and {:?}", current, new);
+            if current != new {
+                ops.push(DiffOp::Remove { id: *current_id });
+                ops.push(DiffOp::Append { id: *new_id });
+            } else {
+                let current_children = current.child_fibers(current_fibers);
+                let new_children = new.child_fibers(new_fibers);
+                if current_children.len() == new_children.len() {
+                    for index in 0..new_children.len() {
+                        let current_index = current_children[index];
+                        let current_root = current_fibers.get(current_index).unwrap();
+                        let new_index = new_children[index];
+                        let new_root = new_fibers.get(new_index).unwrap();
+                        diff_fiber(
+                            current_fibers,
+                            (current_root, &current_index),
+                            new_fibers,
+                            (new_root, &new_index),
+                            ops,
+                        );
+                    }
+                } else {
+                    unimplemented!()
+                }
+            }
+        };
+        let mut ops = Vec::new();
+        if let Some((current_fibers, current_root_id)) = &self.current_tree {
+            let current_root = current_fibers.get(*current_root_id).unwrap();
+            let new_root = new_fibers.get(new_root_id).unwrap();
+            diff_fiber(
+                current_fibers,
+                (current_root, current_root_id),
+                new_fibers,
+                (new_root, &new_root_id),
+                &mut ops,
+            );
+        } else {
+            // add everything
+        }
+        ops
     }
 
     fn commit(
         &mut self,
-        fibers: &mut Arena<Fiber<P, R>>,
+        mut fibers: Arena<Fiber<P, R>>,
         root_id: ArenaNodeId,
     ) -> Result<(), R::Error> {
         let (tx, rx) = channel::unbounded::<Update>();
 
-        self.create_instances(fibers, root_id)?;
+        self.create_instances(&mut fibers, root_id)?;
+        let diff = self.diff(&fibers, root_id);
 
-        walk_fibers(&fibers, root_id, |fiber, id| {
-            debug!("walk {:?}", fiber);
-            match &fiber.body {
-                Some(FiberBody::Text(text, Some(text_instance))) => {
-                    let parent = fiber.parent_native(&fibers);
-                    if parent.as_ref().map_or(false, |p| p.is_native()) {
-                        if parent.as_ref().map_or(false, |p| p.is_root()) {
-                            debug!("append text to container?");
-                        } else if let Some(_) = parent.and_then(|p| p.native_instance_key()) {
-                            debug!("append text ({:?}) to parent", text);
-                            tx.send(Update::AppendTextToParent {
-                                parent: fiber.parent_native_id(&fibers).unwrap(),
-                                text: *id,
-                            })
-                            .unwrap();
-                            // self.renderer
-                            //     .append_child_to_parent(parent, native_instance);
-                        }
-                    }
-                }
-                Some(FiberBody::Native {
-                    native_instance_key: Some(native_instance_key),
-                    ..
-                }) => {
-                    let parent = fiber.parent_native(&fibers);
-                    if parent.as_ref().map_or(false, |p| p.is_native()) {
-                        if parent.as_ref().map_or(false, |p| p.is_root()) {
-                            debug!("append to container");
-                            tx.send(Update::AppendChildToContainer { child: *id })
+        debug!("DIFF {:?}", diff);
+
+        if diff.is_empty() {
+            walk_fibers(&fibers, root_id, |fiber, id| {
+                match &fiber.body {
+                    Some(FiberBody::Text(text, Some(text_instance))) => {
+                        let parent = fiber.parent_native(&fibers);
+                        if parent.as_ref().map_or(false, |p| p.is_native()) {
+                            if parent.as_ref().map_or(false, |p| p.is_root()) {
+                                debug!("append text to container?");
+                            } else if let Some(_) = parent.and_then(|p| p.native_instance_key()) {
+                                debug!("append text ({:?}) to parent", text);
+                                tx.send(Update::AppendTextToParent {
+                                    parent: fiber.parent_native_id(&fibers).unwrap(),
+                                    text: *id,
+                                })
                                 .unwrap();
-                        } else if let Some(_) = parent.and_then(|p| p.native_instance_key()) {
-                            debug!("append to child");
-                            tx.send(Update::AppendChildToParent {
-                                parent: fiber.parent_native_id(&fibers).unwrap(),
-                                child: *id,
-                            })
-                            .unwrap();
-                            // self.renderer
-                            //     .append_child_to_parent(parent, native_instance);
+                                // self.renderer
+                                //     .append_child_to_parent(parent, native_instance);
+                            }
+                        }
+                    }
+                    Some(FiberBody::Native {
+                        native_instance_key: Some(native_instance_key),
+                        ..
+                    }) => {
+                        let parent = fiber.parent_native(&fibers);
+                        if parent.as_ref().map_or(false, |p| p.is_native()) {
+                            if parent.as_ref().map_or(false, |p| p.is_root()) {
+                                debug!("append to container");
+                                tx.send(Update::AppendChildToContainer { child: *id })
+                                    .unwrap();
+                            } else if let Some(_) = parent.and_then(|p| p.native_instance_key()) {
+                                debug!("append to child");
+                                tx.send(Update::AppendChildToParent {
+                                    parent: fiber.parent_native_id(&fibers).unwrap(),
+                                    child: *id,
+                                })
+                                .unwrap();
+                                // self.renderer
+                                //     .append_child_to_parent(parent, native_instance);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(fiber.child)
+            })?;
+        } else {
+            for op in diff {
+                debug!("diff op: {:?}", op);
+                match op {
+                    DiffOp::Remove { id } => {
+                        if let Some(fiber) = fibers.get(id) {
+                            debug!("remove fiber: {:?}", fiber);
+                            if let Some(parent) = fiber.parent_native(&fibers) {
+                                if parent.is_root() {
+                                    match &fiber.body {
+                                        Some(FiberBody::Text(text, Some(text_instance))) => {}
+                                        Some(FiberBody::Native {
+                                            native_instance_key,
+                                            ..
+                                        }) => {
+                                            tx.send(Update::RemoveChildFromContainer { child: id })
+                                                .unwrap();
+                                        }
+                                        _ => {
+                                            warn!("todo")
+                                        }
+                                    };
+                                } else {
+                                    match &fiber.body {
+                                        Some(FiberBody::Text(text, Some(text_instance))) => {}
+                                        Some(FiberBody::Native {
+                                            native_instance_key,
+                                            ..
+                                        }) => {
+                                            tx.send(Update::RemoveChildFromParent {
+                                                parent: fiber.parent_native_id(&fibers).unwrap(),
+                                                child: id,
+                                            })
+                                            .unwrap();
+                                        }
+                                        _ => {
+                                            warn!("todo")
+                                        }
+                                    };
+                                }
+                            }
+                        }
+                    }
+                    DiffOp::Append { id } => {
+                        if let Some(fiber) = fibers.get(id) {
+                            debug!("append fiber: {:?}", fiber);
+                            if let Some(parent) = fiber.parent_native(&fibers) {
+                                if parent.is_root() {
+                                    match &fiber.body {
+                                        Some(FiberBody::Text(text, Some(text_instance))) => {}
+                                        Some(FiberBody::Native {
+                                            native_instance_key,
+                                            ..
+                                        }) => {
+                                            tx.send(Update::RemoveChildFromContainer { child: id })
+                                                .unwrap();
+                                        }
+                                        _ => {
+                                            warn!("todo")
+                                        }
+                                    };
+                                } else {
+                                    match &fiber.body {
+                                        Some(FiberBody::Text(text, Some(text_instance))) => {}
+                                        Some(FiberBody::Native {
+                                            native_instance_key,
+                                            ..
+                                        }) => {
+                                            tx.send(Update::RemoveChildFromParent {
+                                                parent: fiber.parent_native_id(&fibers).unwrap(),
+                                                child: id,
+                                            })
+                                            .unwrap();
+                                        }
+                                        _ => {
+                                            warn!("todo")
+                                        }
+                                    };
+                                }
+                            }
                         }
                     }
                 }
-                _ => {}
             }
-            Ok(fiber.child)
-        })?;
+        }
 
-        self.process_updates(fibers, rx)?;
+        self.current_tree = Some((fibers, root_id));
+        self.process_updates(rx)?;
         Ok(())
     }
 
-    fn process_updates(
-        &mut self,
-        fibers: &mut Arena<Fiber<P, R>>,
-        rx: channel::Receiver<Update>,
-    ) -> Result<(), R::Error> {
+    fn process_updates(&mut self, rx: channel::Receiver<Update>) -> Result<(), R::Error> {
+        let fibers = &mut self.current_tree.as_mut().unwrap().0;
         for update in rx.try_iter() {
+            debug!("update: {:?}", update);
             match update {
                 Update::AppendTextToParent { parent, text } => {
                     let parent = fibers.get(parent).unwrap();
+
                     let text = fibers.get(text).unwrap();
                     self.renderer
                         .borrow_mut()
@@ -613,6 +765,38 @@ where
                         }
                     }
                 }
+                Update::RemoveChildFromContainer { child } => {
+                    self.renderer
+                        .borrow_mut()
+                        .remove_child_from_container(
+                            &mut self.container,
+                            fibers
+                                .get_mut(child)
+                                .unwrap()
+                                .native_instance_key()
+                                .unwrap(),
+                        )
+                        .map_err(Error::RendererError)?;
+                }
+                Update::RemoveChildFromParent { parent, child } => {
+                    let (parent, child) = fibers.get2_mut(parent, child);
+                    debug!("parent? {:?}", parent);
+                    debug!("child? {:?}", child);
+                    match (parent, child) {
+                        (Some(parent), Some(child)) => {
+                            self.renderer
+                                .borrow_mut()
+                                .remove_child_from_parent(
+                                    parent.native_instance_key().unwrap(),
+                                    child.native_instance_key().unwrap(),
+                                )
+                                .map_err(Error::RendererError)?;
+                        }
+                        _ => {
+                            warn!("todo");
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -633,8 +817,7 @@ where
                         element,
                     } => {
                         if self.current_tree.is_none() {
-                            self.commit(&mut fibers, root_id).expect("todo");
-                            self.current_tree = Some((fibers, root_id));
+                            self.commit(fibers, root_id).expect("todo");
                             current_element = Some(element);
                             current_root_id = Some(root_id);
                         } else {
@@ -642,7 +825,7 @@ where
                         }
                     },
                     Event::ReRender {mut fibers} => {
-                        self.commit(&mut fibers, current_root_id.clone().unwrap()).expect("todo");
+                        self.commit(fibers, current_root_id.clone().unwrap()).expect("todo");
                     }
                 }
                 }
@@ -1147,6 +1330,13 @@ enum Update {
         parent: ArenaNodeId,
         child: ArenaNodeId,
     },
+    RemoveChildFromParent {
+        parent: ArenaNodeId,
+        child: ArenaNodeId,
+    },
+    RemoveChildFromContainer {
+        child: ArenaNodeId,
+    },
     AppendTextToParent {
         parent: ArenaNodeId,
         text: ArenaNodeId,
@@ -1190,6 +1380,16 @@ where
     fn append_child_to_parent<'r>(
         &mut self,
         parent: &Self::InstanceKey,
+        child: &Self::InstanceKey,
+    ) -> std::result::Result<(), Self::Error>;
+    fn remove_child_from_parent<'r>(
+        &mut self,
+        parent: &Self::InstanceKey,
+        child: &Self::InstanceKey,
+    ) -> std::result::Result<(), Self::Error>;
+    fn remove_child_from_container(
+        &mut self,
+        container: &mut Self::Container,
         child: &Self::InstanceKey,
     ) -> std::result::Result<(), Self::Error>;
     fn schedule_task(&self, priority: TaskPriority, task: Box<dyn Task>);
