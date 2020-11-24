@@ -4,13 +4,14 @@ use dyn_clone::DynClone;
 pub use sorcery_codegen::component;
 use std::{
     any::Any,
-    borrow::Borrow,
     fmt::{self, Debug},
 };
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 pub use sorcery_macros::{rsx, Props};
+
+pub mod reconciler;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {

@@ -587,8 +587,11 @@ checksum = "7acad6f34eb9e8a259d3283d1e8c1d34d7415943d4895f65cc73813c7396fc85"
 name = "sorcery"
 version = "0.1.0"
 dependencies = [
+ "bumpalo",
  "crossbeam-channel",
+ "derivative",
  "dyn-clone",
+ "generational-arena",
  "sorcery-codegen",
  "sorcery-macros",
  "test-env-log",
@@ -596,6 +599,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber 0.1.6",
+ "uuid",
 ]
 
 [[package]]
@@ -619,7 +623,6 @@ dependencies = [
  "generational-arena",
  "gloo",
  "sorcery",
- "sorcery-reconciler",
  "test-env-log",
  "thiserror",
  "tracing",
@@ -636,24 +639,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "sorcery-reconciler"
-version = "0.1.0"
-dependencies = [
- "bumpalo",
- "crossbeam-channel",
- "derivative",
- "dyn-clone",
- "generational-arena",
- "sorcery",
- "test-env-log",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber 0.1.6",
- "uuid",
 ]
 
 [[package]]

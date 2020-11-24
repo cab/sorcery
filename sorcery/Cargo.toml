@@ -12,13 +12,17 @@ default = ["rsx"]
 rsx = ["sorcery-macros/rsx"]
 
 [dependencies]
+bumpalo = {version = "3.4.0", features = ["collections"]}
 crossbeam-channel = "^0.5"
+derivative = "^2.0"
 dyn-clone = "^1.0"
+generational-arena = "0.2.8"
 sorcery-codegen = {path = "../sorcery-codegen"}
 sorcery-macros = {path = "../sorcery-macros"}
 thiserror = "^1.0"
-tokio = {version = "^0.3", default-features = false, features = ["sync"]}
+tokio = {version = "^0.3", default-features = false, features = ["sync", "macros"]}
 tracing = "0.1"
+uuid = {version = "0.8", features = ["wasm-bindgen", "v4"]}
 
 [dev-dependencies]
 test-env-log = {version = "^0.2", features = ["trace"], default-features = false}

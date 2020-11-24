@@ -1,11 +1,11 @@
+use crate::{
+    AnyComponent, Component, ComponentContext, ComponentElement, ComponentId, ComponentUpdate, Dep,
+    Element, Key, NativeElement, RenderPrimitive, StoredProps, StoredState,
+};
 use bumpalo::Bump;
 use crossbeam_channel as channel;
 use derivative::Derivative;
 use generational_arena::{Arena, Index as ArenaNodeId};
-use sorcery::{
-    AnyComponent, Component, ComponentContext, ComponentElement, ComponentId, ComponentUpdate, Dep,
-    Element, Key, NativeElement, RenderPrimitive, StoredProps, StoredState,
-};
 use std::{
     any::Any,
     cell::RefCell,
@@ -26,7 +26,7 @@ where
     #[error("renderer error")]
     RendererError(E),
     #[error(transparent)]
-    Sorcery(#[from] sorcery::Error),
+    Sorcery(#[from] crate::Error),
     #[error("invalid fiber TODO ID")]
     InvalidFiber,
 }
@@ -84,7 +84,7 @@ where
     R: Renderer<P>,
 {
     id: FiberId,
-    context: sorcery::ComponentContext,
+    context: crate::ComponentContext,
     // this id points to the other tree
     alternate: Option<ArenaNodeId>,
     body: Option<FiberBody<P, R>>,
@@ -226,7 +226,7 @@ where
 {
     fn new(tx: mpsc::UnboundedSender<ComponentUpdate>, id: FiberId, body: FiberBody<P, R>) -> Self {
         Self {
-            context: sorcery::ComponentContext::new(tx, FiberComponentContext::new(id)),
+            context: crate::ComponentContext::new(tx, FiberComponentContext::new(id)),
             id,
             dirty: false,
             sibling: None,
@@ -280,7 +280,7 @@ where
         }
     }
 
-    fn render(&mut self) -> sorcery::Result<Vec<Element<P>>> {
+    fn render(&mut self) -> crate::Result<Vec<Element<P>>> {
         self.context.reset();
         let children = match &self.body {
             Some(FiberBody::Root) => {
@@ -347,8 +347,8 @@ where
 }
 
 fn process_wrap<P, R>(
-    mut f: impl FnMut(&Fiber<P, R>) -> sorcery::Result<()>,
-) -> impl FnMut(&Fiber<P, R>) -> sorcery::Result<Option<ArenaNodeId>>
+    mut f: impl FnMut(&Fiber<P, R>) -> crate::Result<()>,
+) -> impl FnMut(&Fiber<P, R>) -> crate::Result<Option<ArenaNodeId>>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
@@ -376,8 +376,8 @@ where
 fn walk_fibers<P, R>(
     arena: &Arena<Fiber<P, R>>,
     start: ArenaNodeId,
-    mut process: impl FnMut(&Fiber<P, R>, &ArenaNodeId) -> sorcery::Result<Option<ArenaNodeId>>,
-) -> sorcery::Result<()>
+    mut process: impl FnMut(&Fiber<P, R>, &ArenaNodeId) -> crate::Result<Option<ArenaNodeId>>,
+) -> crate::Result<()>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
@@ -1037,7 +1037,7 @@ where
             let node_id = build_tree(&self.component_tx, &mut fibers, &self.root)?;
             let mut root_fiber = Fiber {
                 dirty: false,
-                context: sorcery::ComponentContext::new(
+                context: crate::ComponentContext::new(
                     self.component_tx.clone(),
                     FiberComponentContext::new(fiber_id),
                 ),
@@ -1419,8 +1419,8 @@ mod test {
     use test_env_log::test;
 
     use super::{Context, NativeElement, Reconciler, RenderPrimitive, Renderer};
+    use crate::{component, use_state, Component, ComponentContext, Element};
     use generational_arena::{Arena, Index as ArenaIndex};
-    use sorcery::{component, use_state, Component, ComponentContext, Element};
 
     struct StringRenderer {
         arena: Arena<StringNode>,
@@ -1467,7 +1467,7 @@ mod test {
             &self,
             props: &Self::Props,
             children: &[Element<Self>],
-        ) -> sorcery::Result<Vec<Element<Self>>> {
+        ) -> crate::Result<Vec<Element<Self>>> {
             Ok(children.to_vec())
         }
     }
@@ -1534,7 +1534,7 @@ mod test {
     //         context: &mut ComponentContext,
     //         props: &Self::Props,
     //         children: &[Element<Str>],
-    //     ) -> sorcery::Result<Element<Str>> {
+    //     ) -> crate::Result<Element<Str>> {
     //         let (index, set_index) = use_state(context, 1);
     //         Ok(Element::native(
     //             None,

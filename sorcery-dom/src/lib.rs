@@ -1,8 +1,10 @@
 use dyn_clone::DynClone;
 use generational_arena::{Arena, Index as ArenaIndex};
 use gloo::{events::EventListener, timers::callback::Timeout};
-use sorcery::{Props, RenderPrimitive, StoredProps};
-use sorcery_reconciler::{Reconciler, Task, TaskPriority};
+use sorcery::{
+    reconciler::{self, Reconciler, Task, TaskPriority},
+    Props, RenderPrimitive, StoredProps,
+};
 use std::{cell::RefCell, collections::HashMap, sync::Arc};
 use tracing::{debug, trace, warn};
 use wasm_bindgen::{prelude::*, JsCast};
@@ -96,7 +98,7 @@ impl Default for HtmlContext {
     }
 }
 
-impl sorcery_reconciler::RendererContext for HtmlContext {
+impl reconciler::RendererContext for HtmlContext {
     fn context_for() -> Self {
         Self {}
     }
@@ -106,10 +108,10 @@ pub fn render(
     document: Document,
     mut container: Element,
     element: &sorcery::Element<Html>,
-) -> sorcery_reconciler::Result<(), Error> {
+) -> reconciler::Result<(), Error> {
     let renderer = Renderer::new(document);
-    let mut reconciler = sorcery_reconciler::Reconciler::new(renderer, container);
-    let mut ctx = sorcery_reconciler::Context::new();
+    let mut reconciler = reconciler::Reconciler::new(renderer, container);
+    let mut ctx = reconciler::Context::new();
     reconciler.update_container(&mut ctx, element)?;
     wasm_bindgen_futures::spawn_local(async move {
         reconciler.run().await;
@@ -122,7 +124,7 @@ pub struct ClickEvent {
     pub native: web_sys::MouseEvent,
 }
 
-impl sorcery_reconciler::Renderer<Html> for Renderer {
+impl reconciler::Renderer<Html> for Renderer {
     type Container = Element;
     type InstanceKey = ArenaIndex;
     type TextInstanceKey = ArenaIndex;
