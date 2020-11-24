@@ -16,6 +16,7 @@ use std::{
 };
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, trace, warn};
+use uuid::Uuid;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error<E>
@@ -67,7 +68,13 @@ where
 }
 
 #[derive(Copy, Clone, Debug, PartialOrd, PartialEq, Hash, Eq)]
-struct FiberId(u32);
+struct FiberId(Uuid);
+
+impl FiberId {
+    fn gen() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
 
 #[derive(Derivative)]
 #[derivative(Debug(bound = ""), Clone(bound = ""))]
@@ -324,6 +331,21 @@ where
     },
 }
 
+impl<P, R> PartialEq<FiberBody<P, R>> for FiberBody<P, R>
+where
+    P: RenderPrimitive,
+    R: Renderer<P>,
+{
+    fn eq(&self, other: &FiberBody<P, R>) -> bool {
+        warn!("IMPLEMENT PARTIALEQ FOR REAL");
+        match (self, other) {
+            (FiberBody::Root, FiberBody::Root) => true,
+            (FiberBody::Text(t, _), FiberBody::Text(t2, _)) if t == t2 => true,
+            _ => false,
+        }
+    }
+}
+
 fn process_wrap<P, R>(
     mut f: impl FnMut(&Fiber<P, R>) -> sorcery::Result<()>,
 ) -> impl FnMut(&Fiber<P, R>) -> sorcery::Result<Option<ArenaNodeId>>
@@ -528,6 +550,7 @@ where
         {
             debug!("comparing {:?} and {:?}", current, new);
             if current != new {
+                debug!("neq, replace");
                 ops.push(DiffOp::Remove { id: *current_id });
                 ops.push(DiffOp::Append { id: *new_id });
             }
@@ -628,11 +651,11 @@ where
             })?;
         } else {
             for op in diff {
-                debug!("diff op: {:?}", op);
+                // debug!("diff op: {:?}", op);
                 match op {
                     DiffOp::Remove { id } => {
                         if let Some(fiber) = fibers.get(id) {
-                            debug!("remove fiber: {:?}", fiber);
+                            // debug!("remove fiber: {:?}", fiber);
                             if let Some(parent) = fiber.parent_native(&fibers) {
                                 if parent.is_root() {
                                     match &fiber.body {
@@ -644,8 +667,8 @@ where
                                             tx.send(Update::RemoveChildFromContainer { child: id })
                                                 .unwrap();
                                         }
-                                        _ => {
-                                            warn!("todo")
+                                        other => {
+                                            warn!("todo: rm root for {:?}", other);
                                         }
                                     };
                                 } else {
@@ -661,8 +684,8 @@ where
                                             })
                                             .unwrap();
                                         }
-                                        _ => {
-                                            warn!("todo")
+                                        other => {
+                                            warn!("todo: rm non-root for {:?}", other);
                                         }
                                     };
                                 }
@@ -671,7 +694,7 @@ where
                     }
                     DiffOp::Append { id } => {
                         if let Some(fiber) = fibers.get(id) {
-                            debug!("append fiber: {:?}", fiber);
+                            // debug!("append fiber: {:?}", fiber);
                             if let Some(parent) = fiber.parent_native(&fibers) {
                                 if parent.is_root() {
                                     match &fiber.body {
@@ -687,8 +710,8 @@ where
                                             tx.send(Update::AppendChildToContainer { child: id })
                                                 .unwrap();
                                         }
-                                        _ => {
-                                            warn!("todo")
+                                        other => {
+                                            warn!("todo: append root for {:?}", other);
                                         }
                                     };
                                 } else {
@@ -710,8 +733,8 @@ where
                                             })
                                             .unwrap();
                                         }
-                                        _ => {
-                                            warn!("todo")
+                                        other => {
+                                            warn!("todo: apppend for non-root {:?}", other);
                                         }
                                     };
                                 }
@@ -730,7 +753,7 @@ where
     fn process_updates(&mut self, rx: channel::Receiver<Update>) -> Result<(), R::Error> {
         let fibers = &mut self.current_tree.as_mut().unwrap().0;
         for update in rx.try_iter() {
-            debug!("update: {:?}", update);
+            // trace!("update: {:?}", update);
             match update {
                 Update::AppendTextToParent { parent, text } => {
                     let parent = fibers.get(parent).unwrap();
@@ -818,7 +841,7 @@ where
         loop {
             tokio::select! {
                 Some(event) = self.events_rx.recv() => {
-                    debug!("event: {:?}", event);
+                    // debug!("event: {:?}", event);
                 match event {
                     Event::Render {
                         mut fibers,
@@ -844,7 +867,6 @@ where
                             let context = context.as_any_mut().downcast_mut::<FiberComponentContext>().unwrap();
                             debug!("SET STATE {:?}", context);
                             let (fiber_id, mut fiber) = self.current_tree.as_mut().unwrap().0.iter_mut().find(|(_, n)| n.id == context.id).unwrap();
-                            debug!("fibber: {:?}", fiber);
                             fiber.init_state(pointer, value);
                         }
                         ComponentUpdate::SetState {mut context, pointer, value} => {
@@ -909,30 +931,27 @@ where
     }
 }
 
-fn build_tree<'a, P, R, F>(
+fn build_tree<'a, P, R>(
     tx: &mpsc::UnboundedSender<ComponentUpdate>,
     arena: &mut Arena<Fiber<P, R>>,
     element: &Element<P>,
-    mut next_fiber_id: F,
 ) -> Result<ArenaNodeId, R::Error>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
-    F: FnMut() -> FiberId,
-    F: Clone,
 {
-    debug!("rendering a {:?}\n\n", element);
+    // debug!("rendering a {:?}\n\n", element);
     let children = element.children();
     let fiber = match element {
         Element::Text(txt) => {
-            let fiber = Fiber::text(tx.clone(), next_fiber_id(), txt.to_owned());
+            let fiber = Fiber::text(tx.clone(), FiberId::gen(), txt.to_owned());
             Ok(fiber)
         }
         Element::Component(comp_element) => {
             let instance = comp_element.construct().map_err(Error::Sorcery)?;
             let fiber = Fiber::component(
                 tx.clone(),
-                next_fiber_id(),
+                FiberId::gen(),
                 instance,
                 comp_element.clone_props(),
                 children.to_vec(),
@@ -943,7 +962,7 @@ where
             let instance = native.ty.clone();
             let fiber = Fiber::native(
                 tx.clone(),
-                next_fiber_id(),
+                FiberId::gen(),
                 instance,
                 native.props.clone(),
                 children.to_vec(),
@@ -960,7 +979,7 @@ where
                 .into_iter()
                 .rev()
                 .fold(Result::<_, R::Error>::Ok(None), |prev, next| {
-                    let child_id = build_tree(tx, arena, &next, next_fiber_id.clone())?;
+                    let child_id = build_tree(tx, arena, &next)?;
                     let mut child = arena.get_mut(child_id).unwrap();
                     child.parent = Some(id.clone());
                     child.sibling = prev?;
@@ -1008,17 +1027,11 @@ where
     R: Renderer<P> + 'static,
 {
     fn run(self: Box<Self>) -> TaskResult<()> {
-        debug!("rendering {:?}", self.root);
+        // debug!("rendering {:?}", self.root);
         let mut fibers = Arena::<Fiber<P, R>>::new();
-        let mut next_fiber_id_ = 0;
-        let mut next_fiber_id = move || {
-            let id = next_fiber_id_;
-            next_fiber_id_ += 1;
-            FiberId(id)
-        };
         let root_id = {
-            let fiber_id = next_fiber_id();
-            let node_id = build_tree(&self.component_tx, &mut fibers, &self.root, next_fiber_id)?;
+            let fiber_id = FiberId::gen();
+            let node_id = build_tree(&self.component_tx, &mut fibers, &self.root)?;
             let mut root_fiber = Fiber {
                 dirty: false,
                 context: sorcery::ComponentContext::new(
@@ -1099,13 +1112,6 @@ where
         //         Result::<_, R::Error>::Ok(())
         //     }),
         // )?;
-        let mut next_fiber_id_ = 0;
-        let mut next_fiber_id = move || {
-            warn!("this is wrong fiber id");
-            let id = next_fiber_id_;
-            next_fiber_id_ += 1;
-            FiberId(id)
-        };
 
         let new_children = self
             .fibers
@@ -1127,7 +1133,7 @@ where
             new_children.into_iter().rev().fold(
                 Result::<_, R::Error>::Ok(None),
                 move |prev, next| {
-                    let child_id = build_tree(&tx, fibers, &next, next_fiber_id.clone())?;
+                    let child_id = build_tree(&tx, fibers, &next)?;
                     let mut child = &mut fibers.get_mut(child_id).unwrap();
                     child.parent = Some(alternate_id);
                     child.sibling = prev?;
@@ -1196,13 +1202,6 @@ where
         //         Result::<_, R::Error>::Ok(())
         //     }),
         // )?;
-        let mut next_fiber_id_ = 0;
-        let mut next_fiber_id = move || {
-            warn!("this is wrong fiber id");
-            let id = next_fiber_id_;
-            next_fiber_id_ += 1;
-            FiberId(id)
-        };
 
         let component_tx = self.component_tx.clone();
 
@@ -1225,8 +1224,6 @@ where
             }),
         )?;
 
-        debug!("here.......");
-
         for update in rx.try_iter() {
             match update {
                 RenderUpdate::Update {
@@ -1240,8 +1237,7 @@ where
                         new_children.into_iter().rev().fold(
                             Result::<_, R::Error>::Ok(None),
                             move |prev, next| {
-                                let child_id =
-                                    build_tree(&tx, fibers, &next, next_fiber_id.clone())?;
+                                let child_id = build_tree(&tx, fibers, &next)?;
                                 let mut child = fibers.get_mut(child_id).unwrap();
                                 child.parent = Some(parent);
                                 child.sibling = prev?;

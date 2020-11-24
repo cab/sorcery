@@ -16,6 +16,7 @@ sorcery = {path = "../sorcery"}
 thiserror = "^1.0"
 tokio = {version = "^0.3", default-features = false, features = ["sync", "macros"]}
 tracing = "0.1"
+uuid = {version = "0.8", features = ["wasm-bindgen", "v4"]}
 
 [dev-dependencies]
 test-env-log = {version = "^0.2", features = ["trace"], default-features = false}

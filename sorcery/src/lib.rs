@@ -207,7 +207,7 @@ where
 
 #[derive(Clone)]
 pub struct ComponentContext {
-    state_pointer: usize,
+    state_pointer: std::cell::Cell<usize>,
     state: Vec<HookState>,
     context: Box<dyn ComponentUpdateContext>,
     tx: mpsc::UnboundedSender<ComponentUpdate>,
@@ -220,18 +220,18 @@ impl ComponentContext {
     {
         Self {
             state: vec![],
-            state_pointer: 0,
+            state_pointer: std::cell::Cell::new(0),
             context: Box::new(context),
             tx,
         }
     }
 
     pub fn reset(&mut self) {
-        self.state_pointer = 0;
+        self.state_pointer.set(0);
     }
 
-    fn increment_pointer(&mut self) {
-        self.state_pointer += 1;
+    fn increment_pointer(&self) {
+        self.state_pointer.set(self.state_pointer.get() + 1);
     }
 
     pub fn update_state(&mut self, pointer: usize, value: Box<dyn StoredState>) {
@@ -253,17 +253,14 @@ impl ComponentContext {
     }
 
     fn current_state(&self) -> Option<&HookState> {
-        self.state.get(self.state_pointer)
+        self.state.get(self.state_pointer.get())
     }
 
     fn previous_state(&self) -> Option<&HookState> {
-        self.state.get(self.state_pointer - 1)
+        self.state.get(self.state_pointer.get() - 1)
     }
 
-    fn state<'i, T>(
-        &'i mut self,
-        initial: &'i T,
-    ) -> (&'i T, impl Fn(T) + Sync + Send + Clone + 'static)
+    fn state<'i, T>(&'i self, initial: &'i T) -> (&'i T, impl Fn(T) + Sync + Send + Clone + 'static)
     where
         T: StoredState + Sync + Send + 'static,
     {
@@ -272,7 +269,7 @@ impl ComponentContext {
         let f = {
             let ctx = self.context.clone();
             let tx = self.tx.clone();
-            let pointer = self.state_pointer - 1; // todo make this a fn
+            let pointer = self.state_pointer.get() - 1; // todo make this a fn
             move |e: T| {
                 debug!("updating state for {:?}", std::any::type_name::<T>());
                 tx.send(ComponentUpdate::SetState {
@@ -293,7 +290,7 @@ impl ComponentContext {
         } else {
             let ctx = self.context.clone();
             let tx = self.tx.clone();
-            let pointer = self.state_pointer - 1; // todo make this a fn
+            let pointer = self.state_pointer.get() - 1; // todo make this a fn
             tx.send(ComponentUpdate::InitializeState {
                 pointer: pointer,
                 context: ctx.clone(),
@@ -467,12 +464,8 @@ impl From<u32> for ComponentId {
     }
 }
 
-pub trait StateUpdater<T>: Fn(T) + Send + Sync {}
-
-impl<F, T> StateUpdater<T> for F where F: Fn(T) + Send + Sync {}
-
 pub fn use_state<'i, T>(
-    context: &'i mut ComponentContext,
+    context: &'i ComponentContext,
     initial: &'i T,
 ) -> (&'i T, impl Fn(T) + Send + Sync + Clone + 'static)
 where

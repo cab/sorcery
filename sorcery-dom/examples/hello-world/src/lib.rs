@@ -35,15 +35,21 @@ impl Component<Html> for App {
         children: &[Element<Html>],
     ) -> sorcery::Result<Element<Html>> {
         let (greeting, set_greeting) = use_state(context, &"hello");
+        let (counter, set_counter) = use_state(context, &0);
         let g = "world";
 
         debug!("greeting is {:?}", greeting);
 
         Ok(rsx! {
-            <div class="test-class" on_click={move |e: &ClickEvent| {
-                debug!("clicked from rsx ({:?}): {:?}", g, e.native);
-                set_greeting("goodbye");
-            }}>{greeting} " "
+            <div class="test-class" on_click={{ let greeting = greeting.to_owned(); let counter = *counter; move |e: &ClickEvent| {
+                // debug!("clicked from rsx ({:?}): {:?}", g, e.native);
+                if &greeting == &"hello" {
+                    set_greeting("goodbye");
+                } else {
+                    set_greeting("hello");
+                }
+                set_counter(counter + 1);
+            }}}>{&greeting} " (" {counter} ") "
                 <span key="blue">
                     <Blue {g} />
                 </span>
