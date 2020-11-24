@@ -13,6 +13,8 @@ pub use sorcery_macros::{rsx, Props};
 
 pub mod reconciler;
 
+pub use reconciler::RenderContext;
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("invalid props")]
@@ -39,6 +41,13 @@ pub trait StoredProps: Any + DynClone + std::fmt::Debug {
     fn any(&self) -> &(dyn Any + '_);
 }
 
+impl PartialEq<dyn StoredProps> for dyn StoredProps {
+    fn eq(&self, other: &dyn StoredProps) -> bool {
+        warn!("todo");
+        true
+    }
+}
+
 dyn_clone::clone_trait_object!(StoredProps);
 
 impl<T> StoredProps for T
@@ -50,7 +59,7 @@ where
     }
 }
 
-pub trait StoredState: Any + DynClone + Send + Sync {
+pub trait StoredState: Any + DynClone {
     fn as_any(&self) -> &(dyn Any + '_);
 }
 
@@ -83,6 +92,18 @@ where
     children: Vec<Element<T>>,
 }
 
+impl<T> PartialEq<ComponentElement<T>> for ComponentElement<T>
+where
+    T: RenderPrimitive,
+{
+    fn eq(&self, other: &ComponentElement<T>) -> bool {
+        self.name == other.name
+            && self.key == other.key
+            && &self.props == &other.props
+            && self.children == other.children
+    }
+}
+
 impl<T> Debug for ComponentElement<T>
 where
     T: RenderPrimitive,
@@ -111,7 +132,7 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NativeElement<T>
 where
     T: RenderPrimitive + std::fmt::Debug,
@@ -125,7 +146,7 @@ where
 #[derive(Debug, Hash, PartialOrd, PartialEq, Ord, Eq)]
 pub(crate) struct ElementId(u32);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Element<T>
 where
     T: RenderPrimitive,
@@ -140,8 +161,8 @@ pub trait Props {
     fn builder() -> Self::Builder;
 }
 
-pub trait RenderPrimitive: std::fmt::Debug + Clone {
-    type Props: Props + std::fmt::Debug + Clone;
+pub trait RenderPrimitive: std::fmt::Debug + Clone + PartialEq {
+    type Props: Props + std::fmt::Debug + Clone + PartialEq;
     fn for_name(name: &str) -> Option<Self>;
     fn render<'r>(
         &self,
@@ -284,10 +305,22 @@ where
     fn new(props: &dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>
     where
         Self: Sized;
-    fn render(&self, props: &dyn StoredProps, children: &[Element<T>]) -> Result<Element<T>>;
+    fn render(
+        &self,
+        context: &mut RenderContext,
+        props: &dyn StoredProps,
+        children: &[Element<T>],
+    ) -> Result<Element<T>>;
 }
 
 dyn_clone::clone_trait_object!(<T> AnyComponent<T>);
+
+impl<T> PartialEq<dyn AnyComponent<T>> for dyn AnyComponent<T> {
+    fn eq(&self, other: &dyn AnyComponent<T>) -> bool {
+        warn!("todo");
+        true
+    }
+}
 
 impl<P> Debug for dyn AnyComponent<P>
 where
@@ -310,7 +343,12 @@ where
     fn new(props: &Self::Props) -> Self
     where
         Self: Sized;
-    fn render(&self, props: &Self::Props, children: &[Element<T>]) -> Result<Element<T>>;
+    fn render(
+        &self,
+        context: &mut RenderContext,
+        props: &Self::Props,
+        children: &[Element<T>],
+    ) -> Result<Element<T>>;
 }
 
 impl<C, P, T> AnyComponent<T> for C
@@ -331,9 +369,14 @@ where
         Ok(Box::new(C::new(props)) as Box<dyn AnyComponent<T>>)
     }
 
-    fn render(&self, props: &dyn StoredProps, children: &[Element<T>]) -> Result<Element<T>> {
+    fn render(
+        &self,
+        context: &mut RenderContext,
+        props: &dyn StoredProps,
+        children: &[Element<T>],
+    ) -> Result<Element<T>> {
         let props = props.any().downcast_ref::<P>().ok_or(Error::InvalidProps)?;
-        C::render(self, props, children)
+        C::render(self, context, props, children)
     }
 }
 
@@ -345,12 +388,3 @@ impl From<u32> for ComponentId {
         Self(id)
     }
 }
-
-pub fn use_state<'i, T>(initial: &'i T) -> (&'i T, impl Fn(T) + Send + Sync + Clone + 'static)
-where
-    T: StoredState + 'static,
-{
-    (initial, |t: T| {})
-}
-
-pub fn use_effect(f: impl Fn()) {}

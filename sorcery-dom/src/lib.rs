@@ -24,12 +24,12 @@ impl From<wasm_bindgen::JsValue> for Error {
 
 type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Html {
     tag: String,
 }
 
-#[derive(Props, Debug, Clone)]
+#[derive(Props, Debug, Clone, PartialEq)]
 pub struct HtmlProps {
     on_click: Option<Callback<ClickEvent>>,
     style: Option<String>,
@@ -38,6 +38,14 @@ pub struct HtmlProps {
 
 #[derive(Clone)]
 pub struct Callback<A>(Arc<dyn Fn(&A)>);
+
+impl<A> PartialEq<Callback<A>> for Callback<A> {
+    fn eq(&self, other: &Callback<A>) -> bool {
+        // TODO(cab) is this right?
+        // never equal
+        false
+    }
+}
 
 impl<A> std::fmt::Debug for Callback<A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -103,7 +111,7 @@ pub fn render(
     Ok(())
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ClickEvent {
     pub native: web_sys::MouseEvent,
 }

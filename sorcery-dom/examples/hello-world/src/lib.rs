@@ -1,4 +1,4 @@
-use sorcery::{rsx, use_state, Component, Element};
+use sorcery::{rsx, Component, Element, RenderContext};
 use sorcery_dom::{render, ClickEvent, Html};
 use tracing::debug;
 use wasm_bindgen::prelude::*;
@@ -30,11 +30,12 @@ impl Component<Html> for App {
 
     fn render(
         &self,
+        context: &mut RenderContext,
         props: &Self::Props,
         children: &[Element<Html>],
     ) -> sorcery::Result<Element<Html>> {
-        let (greeting, set_greeting) = use_state(&"hello");
-        let (counter, set_counter) = use_state(&0);
+        let (greeting, set_greeting) = context.use_state(&"hello");
+        let (counter, set_counter) = context.use_state(&0);
         let g = "world";
 
         debug!("greeting is {:?}", greeting);
@@ -72,10 +73,11 @@ impl Component<Html> for Blue {
 
     fn render(
         &self,
+        context: &mut RenderContext,
         props: &Self::Props,
         children: &[Element<Html>],
     ) -> sorcery::Result<Element<Html>> {
-        let (counter, set_counter) = use_state(&0);
+        let (counter, set_counter) = context.use_state(&0);
         Ok(rsx! {
             <span style="color: blue"><span on_click={{  let counter = *counter; move |e: &ClickEvent| {
                 set_counter(counter + 1);
