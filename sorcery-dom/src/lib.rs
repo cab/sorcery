@@ -249,6 +249,20 @@ impl reconciler::Renderer<Html> for Renderer {
         Ok(())
     }
 
+    fn insert_child_in_parent_before<'r>(
+        &mut self,
+        parent: &Self::InstanceKey,
+        child: &Self::InstanceKey,
+        before: &Self::InstanceKey,
+    ) -> std::result::Result<(), Self::Error> {
+        let before = self.nodes.get(*before).unwrap().clone();
+        let (parent, child) = self.nodes.get2_mut(*parent, *child);
+        parent
+            .unwrap()
+            .insert_before(child.unwrap(), Some(&before))?;
+        Ok(())
+    }
+
     fn remove_child_from_parent<'r>(
         &mut self,
         parent: &Self::InstanceKey,

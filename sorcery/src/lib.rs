@@ -73,7 +73,7 @@ impl fmt::Debug for dyn StoredState {
 
 impl<T> StoredState for T
 where
-    T: Any + Clone + Send + Sync,
+    T: Any + Clone,
 {
     fn as_any(&self) -> &dyn Any {
         self
