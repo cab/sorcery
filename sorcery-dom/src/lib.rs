@@ -244,6 +244,7 @@ impl reconciler::Renderer<Html> for Renderer {
         parent: &Self::InstanceKey,
         child: &Self::InstanceKey,
     ) -> Result<()> {
+        debug!("requested to append {:?} to {:?}", child, parent);
         let (parent, child) = self.nodes.get2_mut(*parent, *child);
         parent.unwrap().append_child(&child.unwrap())?;
         Ok(())
@@ -255,11 +256,25 @@ impl reconciler::Renderer<Html> for Renderer {
         child: &Self::InstanceKey,
         before: &Self::InstanceKey,
     ) -> std::result::Result<(), Self::Error> {
+        debug!("requested to insert {:?} in {:?}", child, parent);
         let before = self.nodes.get(*before).unwrap().clone();
         let (parent, child) = self.nodes.get2_mut(*parent, *child);
         parent
             .unwrap()
             .insert_before(child.unwrap(), Some(&before))?;
+        Ok(())
+    }
+
+    fn insert_child_in_container_before<'r>(
+        &mut self,
+        container: &mut Self::Container,
+        child: &Self::InstanceKey,
+        before: &Self::InstanceKey,
+    ) -> std::result::Result<(), Self::Error> {
+        debug!("requested to insert {:?} in container", child);
+        let before = self.nodes.get(*before).unwrap().clone();
+        let child = self.nodes.get_mut(*child);
+        container.insert_before(child.unwrap(), Some(&before))?;
         Ok(())
     }
 

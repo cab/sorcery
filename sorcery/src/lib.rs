@@ -43,7 +43,7 @@ pub trait StoredProps: Any + DynClone + std::fmt::Debug {
 
 impl PartialEq<dyn StoredProps> for dyn StoredProps {
     fn eq(&self, other: &dyn StoredProps) -> bool {
-        warn!("todo");
+        warn!("todo, props are always equal right now");
         true
     }
 }
@@ -283,7 +283,7 @@ dyn_clone::clone_trait_object!(<T> AnyComponent<T>);
 
 impl<T> PartialEq<dyn AnyComponent<T>> for dyn AnyComponent<T> {
     fn eq(&self, other: &dyn AnyComponent<T>) -> bool {
-        warn!("todo");
+        warn!("todo, components are always equal right now");
         true
     }
 }
