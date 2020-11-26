@@ -84,7 +84,7 @@ impl RenderPrimitive for Html {
 struct Renderer {
     nodes: Arena<Node>,
     document: Document,
-    listeners: Vec<EventListener>,
+    listeners: HashMap<ArenaIndex, Vec<EventListener>>,
 }
 
 impl Renderer {
@@ -92,7 +92,7 @@ impl Renderer {
         Self {
             document,
             nodes: Arena::new(),
-            listeners: vec![],
+            listeners: HashMap::new(),
         }
     }
 }
@@ -114,6 +114,46 @@ pub fn render(
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClickEvent {
     pub native: web_sys::MouseEvent,
+}
+
+impl Renderer {
+    fn update_props(
+        &mut self,
+        instance: ArenaIndex,
+        props: &HtmlProps,
+    ) -> std::result::Result<(), Error> {
+        self.listeners.remove(&instance);
+        let element: &Element = self.nodes.get(instance).unwrap().unchecked_ref();
+        if let Some(f) = &props.on_click {
+            let on_click = EventListener::new(element, "click", {
+                let f = f.clone();
+                move |event| {
+                    let event = event
+                        .clone()
+                        .dyn_into::<web_sys::MouseEvent>()
+                        .unwrap_throw();
+                    debug!("clicked!");
+                    f.0(&ClickEvent { native: event });
+                }
+            });
+
+            if !self.listeners.contains_key(&instance) {
+                self.listeners.insert(instance.clone(), vec![]);
+            }
+
+            self.listeners.get_mut(&instance).unwrap().push(on_click);
+
+            // TODO we should track this so it drops appropriately
+            // on_click.forget();
+            // element.add_event_listener_with_callback("click", &Closure::wrap(f))?;
+        }
+
+        if let Some(style) = &props.style {
+            element.set_attribute("style", style)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl reconciler::Renderer<Html> for Renderer {
@@ -178,40 +218,26 @@ impl reconciler::Renderer<Html> for Renderer {
         Ok(())
     }
 
+    fn update_instance_props(
+        &mut self,
+        instance: &Self::InstanceKey,
+        new_props: HtmlProps,
+    ) -> std::result::Result<(), Self::Error> {
+        debug!("UPDATING INSTANCE PROPS...");
+        self.update_props(*instance, &new_props)?;
+        Ok(())
+    }
+
     fn create_instance(
         &mut self,
         ty: &Html,
         props: &<Html as RenderPrimitive>::Props,
         debug: &sorcery::reconciler::InstanceDebug,
     ) -> Result<Self::InstanceKey> {
-        let element = self.document.create_element(&ty.tag)?;
-        if let Some(f) = &props.on_click {
-            let on_click = EventListener::new(&element, "click", {
-                let f = f.clone();
-                move |event| {
-                    let event = event
-                        .clone()
-                        .dyn_into::<web_sys::MouseEvent>()
-                        .unwrap_throw();
-                    debug!("clicked!");
-                    f.0(&ClickEvent { native: event });
-                }
-            });
-
-            self.listeners.push(on_click);
-
-            // TODO we should track this so it drops appropriately
-            // on_click.forget();
-            // element.add_event_listener_with_callback("click", &Closure::wrap(f))?;
-        }
-
-        if let Some(style) = &props.style {
-            element.set_attribute("style", style)?;
-        }
-
+        let mut element = self.document.create_element(&ty.tag)?;
         element.set_attribute("data-sorcery-fiber-id", &debug.id)?;
-
         let id = self.nodes.insert(element.unchecked_into());
+        self.update_props(id, &props)?;
         Ok(id)
     }
 
@@ -220,6 +246,7 @@ impl reconciler::Renderer<Html> for Renderer {
         instance: &Self::TextInstanceKey,
         text: &str,
     ) -> std::result::Result<(), Self::Error> {
+        debug!("UPDATE THE TEXT TO {:?}", text);
         let node = self.nodes.get_mut(*instance).unwrap();
         node.set_node_value(Some(text));
         Ok(())

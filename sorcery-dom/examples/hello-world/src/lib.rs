@@ -79,6 +79,7 @@ impl Component<Html> for Blue {
         children: &[Element<Html>],
     ) -> sorcery::Result<Element<Html>> {
         let (counter, set_counter) = context.use_state(&0);
+        debug!("LOL THE COUNTER IS {:?}", counter);
         Ok(rsx! {
             <span style="color: blue; user-select: none; cursor: pointer;"><span on_click={{  let counter = *counter; move |e: &ClickEvent| {
                 debug!("UPDATE COUNTER TO {:?}", counter + 1);

@@ -1305,8 +1305,8 @@ where
             current_tree.walk_diff(&tree, &mut walker)?;
         } else {
             Tree::empty(self.component_events_tx.clone()).walk_diff(&tree, &mut walker)?;
+            self.current_tree = Some(tree);
         }
-        self.current_tree = Some(tree);
 
         Ok(())
     }
