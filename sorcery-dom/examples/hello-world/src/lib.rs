@@ -51,6 +51,7 @@ impl Component<Html> for App {
                 set_counter(counter + 1);
             }}}>{&greeting}</span> " (" {counter} ") "
                 <span key="blue">
+                "rr"
                     <Blue {g} />
                 </span>
                 "!"
@@ -80,6 +81,7 @@ impl Component<Html> for Blue {
         let (counter, set_counter) = context.use_state(&0);
         Ok(rsx! {
             <span style="color: blue; user-select: none; cursor: pointer;"><span on_click={{  let counter = *counter; move |e: &ClickEvent| {
+                debug!("UPDATE COUNTER TO {:?}", counter + 1);
                 set_counter(counter + 1);
             }}}>{props}</span> " (" {counter} ")"</span>
         })

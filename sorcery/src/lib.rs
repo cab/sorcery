@@ -3,7 +3,7 @@
 use dyn_clone::DynClone;
 pub use sorcery_codegen::component;
 use std::{
-    any::Any,
+    any::{Any, TypeId},
     fmt::{self, Debug},
 };
 use tokio::sync::mpsc;
@@ -267,6 +267,7 @@ pub trait AnyComponent<T>: DynClone
 where
     T: RenderPrimitive,
 {
+    fn kind_id(&self) -> TypeId;
     fn name(&self) -> String;
     fn new(props: &dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>
     where
@@ -323,6 +324,10 @@ where
     P: 'static,
     T: RenderPrimitive,
 {
+    fn kind_id(&self) -> TypeId {
+        TypeId::of::<C>()
+    }
+
     fn name(&self) -> String {
         C::name(self)
     }

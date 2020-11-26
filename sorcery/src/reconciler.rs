@@ -8,7 +8,7 @@ use crossbeam_channel as channel;
 use derivative::Derivative;
 use generational_arena::{Arena, Index};
 use std::{
-    any::Any,
+    any::{Any, TypeId},
     cell::{Cell, RefCell},
     collections::{HashMap, VecDeque},
     fmt,
@@ -51,7 +51,7 @@ where
 impl<P, R> fmt::Debug for Tree<P, R>
 where
     P: RenderPrimitive,
-    R: Renderer<P>,
+    R: Renderer<P> + 'static,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut list = f.debug_list();
@@ -68,7 +68,7 @@ where
 impl<P, R> Tree<P, R>
 where
     P: RenderPrimitive,
-    R: Renderer<P>,
+    R: Renderer<P> + 'static,
 {
     fn empty(tx: mpsc::UnboundedSender<ComponentUpdate>) -> Self {
         let mut nodes = Arena::new();
@@ -163,7 +163,18 @@ where
         self.fibers.get(*self.root_fiber_index).unwrap()
     }
 
+    fn root_fiber_mut(&mut self) -> &mut Fiber<P, R> {
+        self.fibers.get_mut(*self.root_fiber_index).unwrap()
+    }
+
     fn child_fibers(&self, fiber: &Fiber<P, R>) -> Vec<&Fiber<P, R>> {
+        self.child_fiber_ids(fiber)
+            .into_iter()
+            .filter_map(|id| self.fibers.get(*id))
+            .collect()
+    }
+
+    fn child_fiber_ids(&self, fiber: &Fiber<P, R>) -> Vec<FiberIndex> {
         if let Some(node_index) = fiber.node_index {
             self.nodes
                 .get(*node_index)
@@ -171,7 +182,6 @@ where
                 .unwrap_or(vec![])
                 .into_iter()
                 .filter_map(|node_index| self.nodes.get(*node_index).map(|node| node.fiber))
-                .filter_map(|fiber_index| self.fibers.get(*fiber_index))
                 .collect()
         } else {
             vec![]
@@ -182,55 +192,69 @@ where
         fiber.native_parent(&self.nodes, &self.fibers)
     }
 
-    fn walk_diff<RF, AF>(
-        &self,
+    fn walk_diff<RF, AF, UF>(
+        &mut self,
         other: &Self,
-        walker: &mut DiffWalker<P, R, RF, AF>,
+        walker: &mut DiffWalker<P, R, RF, AF, UF>,
     ) -> Result<(), R::Error>
     where
-        RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+        RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
         AF: FnMut(&Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+        UF: FnMut(&mut Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
     {
-        fn walk_fiber<P, R, RF, AF>(
-            left: &Tree<P, R>,
-            left_fiber: Option<&Fiber<P, R>>,
-            right: &Tree<P, R>,
-            right_fiber: Option<&Fiber<P, R>>,
-            walker: &mut DiffWalker<P, R, RF, AF>,
+        fn walk_fiber<'t, P, R, RF, AF, UF>(
+            left: Arc<RefCell<&mut Tree<P, R>>>,
+            left_fiber_index: Option<FiberIndex>,
+            right: &'t Tree<P, R>,
+            right_fiber: Option<&'t Fiber<P, R>>,
+            walker: &mut DiffWalker<P, R, RF, AF, UF>,
         ) -> Result<(), R::Error>
         where
             P: RenderPrimitive,
-            R: Renderer<P>,
-            RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+            R: Renderer<P> + 'static,
+            RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
             AF: FnMut(&Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+            UF: FnMut(&mut Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
         {
-            match (left_fiber, right_fiber) {
-                (Some(left_fiber), Some(right_fiber)) => {
-                    debug!("comparing {:?} vs {:?}", left_fiber, right_fiber);
-                    let replaced = if left_fiber != right_fiber {
-                        (walker.replace)(left_fiber, right_fiber, right)?;
-                        true
-                    } else {
-                        false
+            // debug!(
+            //     "comparing {:?} vs {:?} ======= {:?}",
+            //     left_fiber,
+            //     right_fiber,
+            //     left_fiber == right_fiber
+            // );
+            match (left_fiber_index, right_fiber) {
+                (Some(left_fiber_index), Some(right_fiber)) => {
+                    // debug!("comparing {:?} vs {:?}", left_fiber.body, right_fiber.body);
+                    {
+                        let mut left = left.borrow_mut();
+                        let left_fiber = left.fiber_mut(left_fiber_index).unwrap();
+                        if left_fiber != right_fiber {
+                            if left_fiber.can_update_with(right_fiber) {
+                                (walker.update)(left_fiber, right_fiber, right)?;
+                            } else {
+                                debug!("CANANOT UPDAATE THIS");
+                            }
+                        } else {
+                            debug!("no need to update {:?}", left_fiber.body);
+                        }
                     };
-                    let left_children = left.child_fibers(left_fiber);
+
+                    let left_children_indexes = {
+                        left.borrow()
+                            .child_fiber_ids(left.borrow().fiber(left_fiber_index).unwrap())
+                    };
                     let right_children = right.child_fibers(right_fiber);
-                    debug!("{:?} -> {:?}", left_children, right_children);
-                    match (left_children, right_children) {
+                    // debug!("{:?} -> {:?}", left_children, right_children);
+                    match (left_children_indexes, right_children) {
                         (left_children, right_children)
                             if left_children.len() == right_children.len() =>
                         {
-                            debug!("updating all children");
                             let len = left_children.len();
+                            // debug!("updating all children ({:?})", len);
                             for index in 0..len {
                                 walk_fiber(
-                                    left,
-                                    // we should probably _move_ the nodes instead of recreating them
-                                    if replaced {
-                                        None
-                                    } else {
-                                        Some(left_children[index])
-                                    },
+                                    left.clone(),
+                                    Some(left_children[index]),
                                     right,
                                     Some(right_children[index]),
                                     walker,
@@ -238,9 +262,9 @@ where
                             }
                         }
                         (left_children, right_children) if left_children.len() == 0 => {
-                            debug!("appending new children");
+                            // debug!("appending new children");
                             for child in right_children {
-                                walk_fiber(left, None, right, Some(child), walker)?;
+                                walk_fiber(left.clone(), None, right, Some(child), walker)?;
                             }
                         }
                         (left_children, right_children) if right_children.len() == 0 => {
@@ -249,14 +273,14 @@ where
                         (left_children, right_children) => {
                             unimplemented!("uneven children");
                         }
-                    }
+                    };
                 }
                 (None, Some(right_fiber)) => {
                     debug!("appending new child");
-                    (walker.append)(right_fiber, right)?;
                     for child in right.child_fibers(right_fiber) {
-                        walk_fiber(left, None, right, Some(child), walker)?;
+                        walk_fiber(left.clone(), None, right, Some(child), walker)?;
                     }
+                    (walker.append)(right_fiber, right)?;
                 }
                 (Some(left_fiber), None) => {
                     unimplemented!("no right");
@@ -267,11 +291,12 @@ where
             }
             Ok(())
         }
-        let root_fiber = self.root_fiber();
+        let root_fiber_index = self.root_fiber_index;
         let other_root_fiber = other.root_fiber();
+        let left = Arc::new(RefCell::new(self));
         walk_fiber(
-            self,
-            Some(root_fiber),
+            left,
+            Some(root_fiber_index),
             other,
             Some(other_root_fiber),
             walker,
@@ -280,32 +305,36 @@ where
     }
 }
 
-struct DiffWalker<P, R, RF, AF>
+struct DiffWalker<P, R, RF, AF, UF>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
-    RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+    RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
     AF: FnMut(&Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+    UF: FnMut(&mut Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
 {
     replace: RF,
     append: AF,
+    update: UF,
     p: PhantomData<P>,
     r: PhantomData<R>,
 }
 
-impl<P, R, RF, AF> DiffWalker<P, R, RF, AF>
+impl<P, R, RF, AF, UF> DiffWalker<P, R, RF, AF, UF>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
-    RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+    RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
     AF: FnMut(&Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+    UF: FnMut(&mut Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
 {
-    fn new(replace: RF, append: AF) -> Self {
+    fn new(replace: RF, append: AF, update: UF) -> Self {
         Self {
             p: PhantomData,
             r: PhantomData,
             replace,
             append,
+            update,
         }
     }
 }
@@ -350,7 +379,7 @@ type SharedNodes<P, R> = Arc<RwLock<Nodes<P, R>>>;
 enum Event<P, R>
 where
     P: RenderPrimitive,
-    R: Renderer<P>,
+    R: Renderer<P> + 'static,
 {
     Render {
         tree: Tree<P, R>,
@@ -453,6 +482,13 @@ where
         match &self.body {
             Some(FiberBody::Root) => true,
             Some(FiberBody::Native { .. }) => true,
+            _ => false,
+        }
+    }
+
+    fn can_update_with(&self, other: &Self) -> bool {
+        match (&self.body, &other.body) {
+            (Some(body), Some(other_body)) => body.can_update_with(other_body),
             _ => false,
         }
     }
@@ -652,6 +688,10 @@ where
         arena.get(*self.fiber)
     }
 
+    fn fiber_mut<'a>(&self, arena: &'a mut Arena<Fiber<P, R>>) -> Option<&'a mut Fiber<P, R>> {
+        arena.get_mut(*self.fiber)
+    }
+
     fn is_native(&self, arena: &Arena<Fiber<P, R>>) -> bool {
         self.fiber(arena).map_or(false, |f| f.is_native())
     }
@@ -844,7 +884,7 @@ where
         Ok(children)
     }
 }
-
+// TODO(cab) instead of using context, we should wrap AnyComponent in an "Instance"
 #[derive(Debug)]
 pub struct RenderContext {
     state_pointer: Cell<usize>,
@@ -932,6 +972,28 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
+    fn can_update_with(&self, other: &Self) -> bool {
+        match (&self, other) {
+            (FiberBody::Root, FiberBody::Root) => true,
+            (FiberBody::Text(_, _), FiberBody::Text(_, _)) => true,
+            (
+                FiberBody::Component { instance, .. },
+                FiberBody::Component {
+                    instance: other_instance,
+                    ..
+                },
+            ) => instance.kind_id() == other_instance.kind_id(),
+            (
+                FiberBody::Native { instance, .. },
+                FiberBody::Native {
+                    instance: other_instance,
+                    ..
+                },
+            ) => instance == other_instance,
+            _ => false,
+        }
+    }
+
     fn update_state(&mut self, pointer: usize, new_state: Box<dyn StoredState>) {
         match self {
             FiberBody::Component { ref mut state, .. } => {
@@ -973,7 +1035,7 @@ where
     R: Renderer<P>,
 {
     fn eq(&self, other: &FiberBody<P, R>) -> bool {
-        warn!("IMPLEMENT PARTIALEQ FOR REAL");
+        // warn!("IMPLEMENT PARTIALEQ FOR REAL");
         match (self, other) {
             (FiberBody::Root, FiberBody::Root) => {
                 // roots are always equal
@@ -982,24 +1044,32 @@ where
             (FiberBody::Text(t, _), FiberBody::Text(t2, _)) => t == t2,
             (
                 FiberBody::Component {
-                    children, props, ..
+                    children,
+                    props,
+                    state,
+                    ..
                 },
                 FiberBody::Component {
                     children: children2,
                     props: props2,
+                    state: other_state,
                     ..
                 },
-            ) => children == children2 && props == props2,
+            ) => {
+                // TODO(cab) is a state len check enough?
+                children == children2 && props == props2 && state.len() == other_state.len()
+            }
+
             (
                 FiberBody::Native {
-                    native_instance_key,
-                    ..
+                    instance, props, ..
                 },
                 FiberBody::Native {
-                    native_instance_key: native_instance_key2,
+                    instance: instance2,
+                    props: props2,
                     ..
                 },
-            ) => native_instance_key == native_instance_key2,
+            ) => props == props2 && instance == instance2,
             _ => false,
         }
     }
@@ -1042,10 +1112,13 @@ where
                     props,
                     ..
                 }) if native_instance_key.is_none() => {
+                    let debug = InstanceDebug {
+                        id: fiber.id.0.to_string(),
+                    };
                     *native_instance_key = Some(
                         self.renderer
                             .borrow_mut()
-                            .create_instance(instance, props)
+                            .create_instance(instance, props, &debug)
                             .map_err(Error::RendererError)?,
                     );
                 }
@@ -1060,19 +1133,24 @@ where
         debug!("committing");
         self.create_instances(&mut tree)?;
         let renderer = self.renderer.clone();
-        let mut walker = DiffWalker::new(
+        let mut walker = DiffWalker::<P, _, _, _, _>::new(
             {
                 let renderer = renderer.clone();
                 let container = self.container.clone();
-                move |old, new, tree| {
+                move |old, new, old_tree, new_tree| {
                     // move node
-                    if let Some(parent) = tree.native_parent(old) {
+                    if let Some(parent) = old_tree.native_parent(old) {
+                        debug!("fyi parent is {:?}", parent.body);
+
                         match (&old.body, &new.body) {
-                            (Some(FiberBody::Text(text, Some(text_instance_key))), _) => {
+                            (
+                                Some(FiberBody::Text(text, Some(text_instance_key))),
+                                Some(FiberBody::Text(text2, _)),
+                            ) => {
                                 if parent.is_root() {
                                     unimplemented!("replace root text");
                                 } else {
-                                    warn!("replace parent text");
+                                    warn!("replace parent text {:?} -> {:?}", text, text2);
                                 }
                             }
                             (
@@ -1086,6 +1164,10 @@ where
                                 }),
                             ) => {
                                 if parent.is_root() {
+                                    debug!(
+                                        "replace root + native ({:?} -> {:?})",
+                                        native_instance_key_old, native_instance_key_new
+                                    );
                                     renderer
                                         .borrow_mut()
                                         .insert_child_in_container_before(
@@ -1102,6 +1184,13 @@ where
                                         )
                                         .map_err(Error::RendererError)?;
                                 } else {
+                                    debug!(
+                                        "replace root + parent ({:?} -> {:?})",
+                                        native_instance_key_old, native_instance_key_new
+                                    );
+                                    if native_instance_key_new == native_instance_key_old {
+                                        panic!();
+                                    }
                                     renderer
                                         .borrow_mut()
                                         .insert_child_in_parent_before(
@@ -1125,51 +1214,15 @@ where
                         unimplemented!("missing parent");
                     }
 
-                    // // move children
-                    // for child in tree.child_fibers(old) {
-                    //     match &child.body {
-                    //         Some(FiberBody::Text(_, Some(text_instance_key))) => {
-                    //             renderer
-                    //                 .borrow_mut()
-                    //                 .append_text_to_parent(
-                    //                     new.native_instance_key().unwrap(),
-                    //                     text_instance_key,
-                    //                 )
-                    //                 .map_err(Error::RendererError)?;
-                    //         }
-                    //         Some(FiberBody::Native {
-                    //             native_instance_key: Some(native_instance_key),
-                    //             ..
-                    //         }) => {
-                    //             renderer
-                    //                 .borrow_mut()
-                    //                 .append_child_to_parent(
-                    //                     new.native_instance_key().unwrap(),
-                    //                     native_instance_key,
-                    //                 )
-                    //                 .map_err(Error::RendererError)?;
-                    //             // renderer
-                    //             //     .borrow_mut()
-                    //             //     .remove_child_from_parent(
-                    //             //         parent.native_instance_key().unwrap(),
-                    //             //         native_instance_key_old,
-                    //             //     )
-                    //             //     .map_err(Error::RendererError)?;
-                    //         }
-                    //         _ => {
-                    //             // ?
-                    //         }
-                    //     }
-                    // }
-
                     Ok(())
                 }
             },
             {
+                let renderer = renderer.clone();
                 let container = self.container.clone();
                 move |child, tree| {
                     if let Some(parent) = tree.native_parent(child) {
-                        debug!("append {:?} to {:?}", child, parent);
+                        debug!("append {:?} to {:?}", child.body, parent.body);
                         match &child.body {
                             Some(FiberBody::Text(text, Some(text_instance_key))) => {
                                 if parent.is_root() {
@@ -1206,7 +1259,9 @@ where
                                         .map_err(Error::RendererError)?;
                                 }
                             }
-                            _ => {}
+                            other => {
+                                debug!("SKIPPED APPEND!!!!!");
+                            }
                         };
                     } else {
                         unimplemented!("missing parent");
@@ -1214,8 +1269,47 @@ where
                     Ok(())
                 }
             },
+            {
+                let renderer = renderer.clone();
+                move |fiber, with, tree| {
+                    debug!("update {:?} to match {:?}", fiber, with);
+                    match (fiber.body.as_ref().unwrap(), with.body.as_ref().unwrap()) {
+                        (FiberBody::Root, FiberBody::Root) => {
+                            // skip
+                        }
+                        (FiberBody::Component { .. }, FiberBody::Component { .. }) => {}
+                        (
+                            FiberBody::Native {
+                                native_instance_key: Some(native_instance_key),
+                                ..
+                            },
+                            FiberBody::Native {
+                                props: new_props, ..
+                            },
+                        ) => {
+                            renderer
+                                .borrow_mut()
+                                .update_instance_props(
+                                    native_instance_key,
+                                    P::Props::clone(new_props),
+                                )
+                                .map_err(Error::RendererError)?;
+                        }
+                        (FiberBody::Text(_, Some(instance)), FiberBody::Text(text, _)) => {
+                            renderer
+                                .borrow_mut()
+                                .update_text(instance, text)
+                                .map_err(Error::RendererError)?;
+                        }
+                        (a, b) => {
+                            unimplemented!("{:?} with {:?}", a, b);
+                        }
+                    }
+                    Ok(())
+                }
+            },
         );
-        if let Some(current_tree) = self.current_tree.as_ref() {
+        if let Some(current_tree) = self.current_tree.as_mut() {
             current_tree.walk_diff(&tree, &mut walker)?;
         } else {
             Tree::empty(self.component_events_tx.clone()).walk_diff(&tree, &mut walker)?;
@@ -1240,7 +1334,6 @@ where
                             self.events_tx.send(Event::SetState {
                                 pointer, fiber_index, value
                             }).unwrap();
-
                         },
                         ComponentUpdate::InitializeState {pointer, value, fiber_index} => {
                             self.events_tx.send(Event::InitializeState { pointer, value, fiber_index}).unwrap();
@@ -1263,8 +1356,11 @@ where
                     },
                     Event::SetState { pointer, fiber_index, value} => {
                         if let Some(mut fiber) = self.current_tree.as_mut().unwrap().fiber_mut(fiber_index) {
+                            debug!("UPDATING STATE");
                             fiber.update_state(pointer, value);
                             self.rerender(fiber_index).unwrap();
+                        } else {
+                            panic!("invalid state set");
                         }
                     },
                     Event::InitializeState {pointer, value, fiber_index} => {
@@ -1380,7 +1476,7 @@ type TaskResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 struct RenderTask<P, R>
 where
     P: RenderPrimitive,
-    R: Renderer<P>,
+    R: Renderer<P> + 'static,
 {
     root: Element<P>,
     tx: mpsc::UnboundedSender<Event<P, R>>,
@@ -1454,7 +1550,7 @@ where
 struct UpdateFiberTask<P, R>
 where
     P: RenderPrimitive,
-    R: Renderer<P>,
+    R: Renderer<P> + 'static,
 {
     fiber: FiberIndex,
     tree: Tree<P, R>,
@@ -1542,6 +1638,11 @@ where
     }
 }
 
+#[derive(Debug)]
+pub struct InstanceDebug {
+    pub id: String,
+}
+
 pub trait Renderer<P>
 where
     // TODO <P> should probably be an associated type (Primitive: RenderPrimitive)
@@ -1555,11 +1656,17 @@ where
         &mut self,
         ty: &P,
         props: &P::Props,
+        debug: &InstanceDebug,
     ) -> std::result::Result<Self::InstanceKey, Self::Error>;
     fn create_text_instance(
         &mut self,
         text: &str,
     ) -> std::result::Result<Self::TextInstanceKey, Self::Error>;
+    fn update_instance_props(
+        &mut self,
+        instance: &Self::InstanceKey,
+        new_props: P::Props,
+    ) -> std::result::Result<(), Self::Error>;
     fn append_child_to_container(
         &mut self,
         container: &mut Self::Container,
@@ -1587,7 +1694,11 @@ where
         child: &Self::InstanceKey,
         before: &Self::InstanceKey,
     ) -> std::result::Result<(), Self::Error>;
-
+    fn update_text(
+        &mut self,
+        instance: &Self::TextInstanceKey,
+        text: &str,
+    ) -> std::result::Result<(), Self::Error>;
     fn remove_child_from_parent<'r>(
         &mut self,
         parent: &Self::InstanceKey,

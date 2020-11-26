@@ -182,6 +182,7 @@ impl reconciler::Renderer<Html> for Renderer {
         &mut self,
         ty: &Html,
         props: &<Html as RenderPrimitive>::Props,
+        debug: &sorcery::reconciler::InstanceDebug,
     ) -> Result<Self::InstanceKey> {
         let element = self.document.create_element(&ty.tag)?;
         if let Some(f) = &props.on_click {
@@ -208,8 +209,20 @@ impl reconciler::Renderer<Html> for Renderer {
             element.set_attribute("style", style)?;
         }
 
+        element.set_attribute("data-sorcery-fiber-id", &debug.id)?;
+
         let id = self.nodes.insert(element.unchecked_into());
         Ok(id)
+    }
+
+    fn update_text(
+        &mut self,
+        instance: &Self::TextInstanceKey,
+        text: &str,
+    ) -> std::result::Result<(), Self::Error> {
+        let node = self.nodes.get_mut(*instance).unwrap();
+        node.set_node_value(Some(text));
+        Ok(())
     }
 
     fn create_text_instance(&mut self, text: &str) -> Result<Self::TextInstanceKey> {
@@ -223,6 +236,7 @@ impl reconciler::Renderer<Html> for Renderer {
         parent: &Self::InstanceKey,
         text: &Self::TextInstanceKey,
     ) -> std::result::Result<(), Self::Error> {
+        debug!("append text to container {:?} -> {:?}", text, parent);
         let (parent, text) = self.nodes.get2_mut(*parent, *text);
         parent.unwrap().append_child(&text.unwrap())?;
         Ok(())
@@ -233,8 +247,8 @@ impl reconciler::Renderer<Html> for Renderer {
         container: &mut Self::Container,
         child: &Self::InstanceKey,
     ) -> Result<()> {
+        debug!("append node to container {:?}", child);
         let node = self.nodes.get(*child).unwrap();
-        debug!("append node to container {:?}", node);
         container.append_child(node)?;
         Ok(())
     }
@@ -283,8 +297,8 @@ impl reconciler::Renderer<Html> for Renderer {
         parent: &Self::InstanceKey,
         child: &Self::InstanceKey,
     ) -> Result<()> {
-        let (parent, child) = self.nodes.get2_mut(*parent, *child);
         debug!("requested to remove {:?} from {:?}", child, parent);
+        let (parent, child) = self.nodes.get2_mut(*parent, *child);
         parent.unwrap().remove_child(child.unwrap())?;
         Ok(())
     }
@@ -294,8 +308,8 @@ impl reconciler::Renderer<Html> for Renderer {
         container: &mut Self::Container,
         child: &Self::InstanceKey,
     ) -> Result<()> {
+        debug!("requested to remove {:?} from container", child);
         let node = self.nodes.get(*child).unwrap();
-        debug!("requested to remove {:?} from container", node);
         container.remove_child(node)?;
         Ok(())
     }
