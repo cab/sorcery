@@ -92,6 +92,51 @@ where
         }
     }
 
+    fn with_root(&self, new_root: FiberIndex) -> Self {
+        let mut clone = self.clone();
+        let node_index = {
+            let fiber = self.fiber(new_root).unwrap();
+            fiber.node_index.unwrap()
+        };
+        clone.root_node_index = node_index;
+        clone.root_fiber_index = new_root;
+        clone
+    }
+
+    fn rerender_at(&mut self, fiber_index: FiberIndex) -> Result<(), R::Error> {
+        let (node_index, new_children, event_tx) = {
+            let fiber = self.fiber_mut(fiber_index).unwrap(); // todo
+            (
+                fiber.node_index.unwrap(),
+                fiber.render(fiber_index)?,
+                fiber.event_tx.clone(),
+            )
+        };
+        let to_child = {
+            let nodes = &mut self.nodes;
+            let fibers = &mut self.fibers;
+
+            new_children.into_iter().rev().fold(
+                Result::<_, R::Error>::Ok(None),
+                move |prev, next| {
+                    let child_node_index = build_tree(&event_tx, nodes, fibers, &next)?;
+                    let mut child = nodes.get_mut(*child_node_index).unwrap();
+                    child.parent = Some(node_index);
+                    child.sibling = prev?;
+                    Ok(Some(child_node_index))
+                },
+            )?
+        };
+        let node = self.node_mut(node_index).unwrap();
+        node.child = to_child;
+        Ok(())
+    }
+
+    fn rerender(&mut self) -> Result<(), R::Error> {
+        self.rerender_at(self.root_fiber_index)?;
+        Ok(())
+    }
+
     fn walk(
         &self,
         mut f: impl FnMut(&Node<P, R>, &Fiber<P, R>, &NodeIndex, &FiberIndex) -> Result<(), R::Error>,
@@ -162,6 +207,10 @@ where
 
     fn root_fiber(&self) -> &Fiber<P, R> {
         self.fibers.get(*self.root_fiber_index).unwrap()
+    }
+
+    fn root_node(&self) -> &Node<P, R> {
+        self.nodes.get(*self.root_node_index).unwrap()
     }
 
     fn root_fiber_mut(&mut self) -> &mut Fiber<P, R> {
@@ -389,9 +438,7 @@ where
     Rerender {
         tree: Tree<P, R>,
     },
-    RequestUpdate {
-        index: FiberIndex,
-    },
+    RequestUpdate {},
 }
 
 #[derive(Copy, Clone, Debug, PartialOrd, PartialEq, Hash, Eq)]
@@ -497,8 +544,11 @@ where
     }
 
     fn update_state(&mut self, pointer: usize, state: Box<dyn StoredState>) {
+        debug!("updating state");
         if let Some(mut body) = self.body.as_mut() {
             body.update_state(pointer, state);
+        } else {
+            unimplemented!("bad update state");
         }
     }
 
@@ -506,6 +556,8 @@ where
         debug!("initializing state");
         if let Some(mut body) = self.body.as_mut() {
             body.init_state(pointer, state);
+        } else {
+            unimplemented!("bad init state");
         }
     }
 
@@ -844,24 +896,26 @@ where
         }
     }
 
-    fn commit(&mut self, update: FiberUpdate, index: FiberIndex) -> crate::Result<()> {
-        match update {
-            FiberUpdate::InitState { pointer, value } => {
-                self.init_state(pointer, value);
-            }
-            FiberUpdate::SetState { .. } => {
-                unimplemented!();
-                self.event_tx.send(Event::RequestUpdate { index }).unwrap();
+    fn process_updates(&mut self) -> crate::Result<bool> {
+        let mut updated = false;
+        for update in self.internal_events_rx.try_iter().collect::<Vec<_>>() {
+            match update {
+                FiberUpdate::InitState { pointer, value } => {
+                    self.init_state(pointer, value);
+                    updated = true;
+                }
+                FiberUpdate::SetState { pointer, value } => {
+                    self.update_state(pointer, value);
+                    updated = true;
+                }
             }
         }
-        Ok(())
+        Ok(updated)
     }
 
-    fn render(&mut self, fiber_index: FiberIndex) -> crate::Result<Vec<Element<P>>> {
+    fn render(&self, fiber_index: FiberIndex) -> crate::Result<Vec<Element<P>>> {
         let children = match &self.body {
-            Some(FiberBody::Root) => {
-                unimplemented!("root");
-            }
+            Some(FiberBody::Root) => Ok(vec![]),
             Some(FiberBody::Text(_, _)) => Ok(vec![]),
             Some(FiberBody::Component {
                 instance,
@@ -877,9 +931,7 @@ where
                     fiber_index,
                     internal_events_tx: self.internal_events_tx.clone(),
                     trigger_rerender: Arc::new(move || {
-                        event_tx
-                            .send(Event::RequestUpdate { index: fiber_index })
-                            .unwrap();
+                        event_tx.send(Event::RequestUpdate {}).unwrap();
                     }),
                 };
                 let children = self.children().unwrap_or(&[]);
@@ -1388,21 +1440,20 @@ where
                 Event::Rerender { mut tree } => {
                     self.commit(tree).unwrap();
                 }
-                Event::RequestUpdate { index } => {
-                    self.rerender(index).unwrap();
+                Event::RequestUpdate {} => {
+                    self.rerender().unwrap();
                 }
             }
         }
     }
 
-    fn rerender(&mut self, fiber: FiberIndex) -> Result<(), R::Error> {
+    fn rerender(&mut self) -> Result<(), R::Error> {
         self.renderer
             .borrow_mut()
             .schedule_local_task(
                 TaskPriority::Immediate,
-                Box::new(UpdateFiberTask::<P, R>::new(
+                Box::new(RerenderTask::<P, R>::new(
                     self.events_tx.clone(),
-                    fiber,
                     self.current_tree.clone().unwrap(),
                 )),
             )
@@ -1556,28 +1607,27 @@ where
     }
 }
 
-struct UpdateFiberTask<P, R>
+struct RerenderTask<P, R>
 where
     P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
 {
-    fiber: FiberIndex,
     tree: Tree<P, R>,
     tx: mpsc::UnboundedSender<Event<P, R>>,
 }
 
-impl<P, R> UpdateFiberTask<P, R>
+impl<P, R> RerenderTask<P, R>
 where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    fn new(tx: mpsc::UnboundedSender<Event<P, R>>, fiber: FiberIndex, tree: Tree<P, R>) -> Self {
-        Self { fiber, tree, tx }
+    fn new(tx: mpsc::UnboundedSender<Event<P, R>>, tree: Tree<P, R>) -> Self {
+        Self { tree, tx }
     }
 }
 
 #[async_trait(?Send)]
-impl<P, R> LocalTask for UpdateFiberTask<P, R>
+impl<P, R> LocalTask for RerenderTask<P, R>
 where
     P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
@@ -1585,28 +1635,35 @@ where
     async fn run(mut self: Box<Self>) -> TaskResult<()> {
         // debug!("rendering {:?}", self.root);
         let mut tree = self.tree;
-        let (node_index, new_children) = {
-            let fiber = tree.fiber_mut(self.fiber).unwrap(); // todo
-            (fiber.node_index.unwrap(), fiber.render(self.fiber)?)
-        };
-        let to_child = {
-            let nodes = &mut tree.nodes;
-            let fibers = &mut tree.fibers;
-            let tx = self.tx.clone();
-            new_children.into_iter().rev().fold(
-                Result::<_, R::Error>::Ok(None),
-                move |prev, next| {
-                    let child_node_index = build_tree(&tx, nodes, fibers, &next)?;
-                    let mut child = nodes.get_mut(*child_node_index).unwrap();
-                    child.parent = Some(node_index);
-                    child.sibling = prev?;
-                    Ok(Some(child_node_index))
-                },
-            )?
-        };
-        let node = tree.node_mut(node_index).unwrap();
-        node.child = to_child;
-        self.tx.send(Event::Rerender { tree: tree }).unwrap();
+        tree.walk_with_mut_fibers(|_, fiber, _, _, _| {
+            fiber.process_updates()?;
+            Ok(())
+        })?;
+
+        tree.rerender();
+
+        // let (node_index, new_children) = {
+        //     let fiber = tree.fiber_mut(self.fiber).unwrap(); // todo
+        //     (fiber.node_index.unwrap(), fiber.render(self.fiber)?)
+        // };
+        // let to_child = {
+        //     let nodes = &mut tree.nodes;
+        //     let fibers = &mut tree.fibers;
+        //     let tx = self.tx.clone();
+        //     new_children.into_iter().rev().fold(
+        //         Result::<_, R::Error>::Ok(None),
+        //         move |prev, next| {
+        //             let child_node_index = build_tree(&tx, nodes, fibers, &next)?;
+        //             let mut child = nodes.get_mut(*child_node_index).unwrap();
+        //             child.parent = Some(node_index);
+        //             child.sibling = prev?;
+        //             Ok(Some(child_node_index))
+        //         },
+        //     )?
+        // };
+        // let node = tree.node_mut(node_index).unwrap();
+        // node.child = to_child;
+        // self.tx.send(Event::Rerender { tree: tree }).unwrap();
         Ok(())
     }
 }
