@@ -40,7 +40,7 @@ pub type Result<T, E> = std::result::Result<T, Error<E>>;
 struct Tree<P, R>
 where
     P: RenderPrimitive,
-    R: Renderer<P>,
+    R: Renderer<P> + 'static,
 {
     nodes: Arena<Node<P, R>>,
     root_node_index: NodeIndex,
@@ -70,10 +70,10 @@ where
     P: RenderPrimitive,
     R: Renderer<P> + 'static,
 {
-    fn empty(tx: mpsc::UnboundedSender<ComponentUpdate>) -> Self {
+    fn empty(tx: mpsc::UnboundedSender<Event<P, R>>) -> Self {
         let mut nodes = Arena::new();
         let mut fibers = Arena::new();
-        let (root_node_index, root_fiber_index) = create_root(&mut nodes, &mut fibers);
+        let (root_node_index, root_fiber_index) = create_root(tx, &mut nodes, &mut fibers);
         Self::new(nodes, root_node_index, fibers, root_fiber_index)
     }
 
@@ -414,11 +414,12 @@ impl FiberId {
 struct Fiber<P, R>
 where
     P: RenderPrimitive,
-    R: Renderer<P>,
+    R: Renderer<P> + 'static,
 {
     id: FiberId,
     node_index: Option<NodeIndex>,
     body: Option<FiberBody<P, R>>,
+    event_tx: mpsc::UnboundedSender<Event<P, R>>,
     // props: Box<dyn StoredProps>,
     // state: Box<dyn StoredState>,
     // children: Vec<Element<P>>,
@@ -783,24 +784,26 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    fn new(body: FiberBody<P, R>) -> Self {
+    fn new(event_tx: mpsc::UnboundedSender<Event<P, R>>, body: FiberBody<P, R>) -> Self {
         Self {
             id: FiberId::gen(),
             node_index: None,
             dirty: false,
             body: Some(body),
+            event_tx,
         }
     }
 
-    fn root() -> Self {
-        Self::new(FiberBody::Root)
+    fn root(event_tx: mpsc::UnboundedSender<Event<P, R>>) -> Self {
+        Self::new(event_tx, FiberBody::Root)
     }
 
-    fn text(text: String) -> Self {
-        Self::new(FiberBody::Text(text, None))
+    fn text(event_tx: mpsc::UnboundedSender<Event<P, R>>, text: String) -> Self {
+        Self::new(event_tx, FiberBody::Text(text, None))
     }
 
     fn component(
+        event_tx: mpsc::UnboundedSender<Event<P, R>>,
         instance: Box<dyn AnyComponent<P>>,
         props: Box<dyn StoredProps>,
         children: Vec<Element<P>>,
@@ -811,17 +814,22 @@ where
             props,
             children,
         };
-        Self::new(body)
+        Self::new(event_tx, body)
     }
 
-    fn native(instance: P, props: P::Props, children: Vec<Element<P>>) -> Self {
+    fn native(
+        event_tx: mpsc::UnboundedSender<Event<P, R>>,
+        instance: P,
+        props: P::Props,
+        children: Vec<Element<P>>,
+    ) -> Self {
         let body = FiberBody::Native {
             instance,
             props,
             native_instance_key: None,
             children,
         };
-        Self::new(body)
+        Self::new(event_tx, body)
     }
 
     fn children(&self) -> Option<&[Element<P>]> {
@@ -1285,7 +1293,7 @@ where
         if let Some(current_tree) = self.current_tree.as_mut() {
             current_tree.walk_diff(&tree, &mut walker)?;
         } else {
-            Tree::empty(self.component_events_tx.clone()).walk_diff(&tree, &mut walker)?;
+            Tree::empty(self.events_tx.clone()).walk_diff(&tree, &mut walker)?;
             self.current_tree = Some(tree);
         }
 
@@ -1342,7 +1350,6 @@ where
                 TaskPriority::Immediate,
                 Box::new(UpdateFiberTask::<P, R>::new(
                     self.events_tx.clone(),
-                    self.component_events_tx.clone(),
                     fiber,
                     self.current_tree.clone().unwrap(),
                 )),
@@ -1367,6 +1374,7 @@ where
 }
 
 fn build_tree<'a, P, R>(
+    event_tx: &mpsc::UnboundedSender<Event<P, R>>,
     nodes: &mut Arena<Node<P, R>>,
     fibers: &mut Arena<Fiber<P, R>>,
     element: &Element<P>,
@@ -1379,17 +1387,27 @@ where
     let children = element.children();
     let fiber = match element {
         Element::Text(txt) => {
-            let fiber = Fiber::text(txt.to_owned());
+            let fiber = Fiber::text(event_tx.clone(), txt.to_owned());
             Ok(fiber)
         }
         Element::Component(comp_element) => {
             let instance = comp_element.construct().map_err(Error::Sorcery)?;
-            let fiber = Fiber::component(instance, comp_element.clone_props(), children.to_vec());
+            let fiber = Fiber::component(
+                event_tx.clone(),
+                instance,
+                comp_element.clone_props(),
+                children.to_vec(),
+            );
             Result::<_, R::Error>::Ok(fiber)
         }
         Element::Native(native) => {
             let instance = native.ty.clone();
-            let fiber = Fiber::native(instance, native.props.clone(), children.to_vec());
+            let fiber = Fiber::native(
+                event_tx.clone(),
+                instance,
+                native.props.clone(),
+                children.to_vec(),
+            );
             Ok(fiber)
         }
     }?;
@@ -1406,7 +1424,7 @@ where
                 .into_iter()
                 .rev()
                 .fold(Result::<_, R::Error>::Ok(None), |prev, next| {
-                    let child_index = build_tree(nodes, fibers, &next)?;
+                    let child_index = build_tree(event_tx, nodes, fibers, &next)?;
                     let mut child = nodes.get_mut(*child_index).unwrap();
                     child.parent = Some(node_index);
                     child.sibling = prev?;
@@ -1441,6 +1459,7 @@ where
 }
 
 fn create_root<P, R>(
+    event_tx: mpsc::UnboundedSender<Event<P, R>>,
     nodes: &mut Arena<Node<P, R>>,
     fibers: &mut Arena<Fiber<P, R>>,
 ) -> (NodeIndex, FiberIndex)
@@ -1448,7 +1467,7 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    let mut root_fiber = Fiber::root();
+    let mut root_fiber = Fiber::root(event_tx);
     let root_fiber_index = FiberIndex(fibers.insert(root_fiber));
     let mut root_node = Node::new(root_fiber_index);
     let root_node_index = NodeIndex(nodes.insert(root_node));
@@ -1467,8 +1486,9 @@ where
         let mut nodes = Arena::<Node<P, R>>::new();
         let mut fibers = Arena::<Fiber<P, R>>::new();
         let tree = {
-            let node_index = build_tree(&mut nodes, &mut fibers, &self.root)?;
-            let (root_node_index, root_fiber_index) = create_root(&mut nodes, &mut fibers);
+            let node_index = build_tree(&self.tx, &mut nodes, &mut fibers, &self.root)?;
+            let (root_node_index, root_fiber_index) =
+                create_root(self.tx.clone(), &mut nodes, &mut fibers);
             let root_node = nodes.get_mut(*root_node_index).unwrap();
             root_node.child = Some(node_index);
             nodes.get_mut(*node_index).unwrap().parent = Some(root_node_index);
@@ -1492,7 +1512,6 @@ where
     fiber: FiberIndex,
     tree: Tree<P, R>,
     tx: mpsc::UnboundedSender<Event<P, R>>,
-    component_tx: mpsc::UnboundedSender<ComponentUpdate>,
 }
 
 impl<P, R> UpdateFiberTask<P, R>
@@ -1500,18 +1519,8 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    fn new(
-        tx: mpsc::UnboundedSender<Event<P, R>>,
-        component_tx: mpsc::UnboundedSender<ComponentUpdate>,
-        fiber: FiberIndex,
-        tree: Tree<P, R>,
-    ) -> Self {
-        Self {
-            fiber,
-            tree,
-            tx,
-            component_tx,
-        }
+    fn new(tx: mpsc::UnboundedSender<Event<P, R>>, fiber: FiberIndex, tree: Tree<P, R>) -> Self {
+        Self { fiber, tree, tx }
     }
 }
 
@@ -1531,11 +1540,11 @@ where
         let to_child = {
             let nodes = &mut tree.nodes;
             let fibers = &mut tree.fibers;
-            let tx = self.component_tx.clone();
+            let tx = self.tx.clone();
             new_children.into_iter().rev().fold(
                 Result::<_, R::Error>::Ok(None),
                 move |prev, next| {
-                    let child_node_index = build_tree(nodes, fibers, &next)?;
+                    let child_node_index = build_tree(&tx, nodes, fibers, &next)?;
                     let mut child = nodes.get_mut(*child_node_index).unwrap();
                     child.parent = Some(node_index);
                     child.sibling = prev?;
@@ -1547,31 +1556,6 @@ where
         node.child = to_child;
         self.tx.send(Event::Rerender { tree: tree }).unwrap();
         Ok(())
-    }
-}
-
-pub struct Context<P, R>
-where
-    P: RenderPrimitive,
-    R: Renderer<P>,
-{
-    fibers: Arena<Fiber<P, R>>,
-    tx: channel::Sender<ComponentUpdate>,
-    rx: channel::Receiver<ComponentUpdate>,
-}
-
-impl<'r, P, R> Context<P, R>
-where
-    P: RenderPrimitive,
-    R: Renderer<P>,
-{
-    pub fn new() -> Self {
-        let (tx, rx) = channel::unbounded();
-        Self {
-            fibers: Arena::new(),
-            tx,
-            rx,
-        }
     }
 }
 
