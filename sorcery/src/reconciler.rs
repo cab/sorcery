@@ -40,7 +40,7 @@ pub type Result<T, E> = std::result::Result<T, Error<E>>;
 #[derivative(Clone(bound = ""))]
 struct Tree<P, R>
 where
-    P: RenderPrimitive,
+    P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
 {
     nodes: Arena<Node<P, R>>,
@@ -51,7 +51,7 @@ where
 
 impl<P, R> fmt::Debug for Tree<P, R>
 where
-    P: RenderPrimitive,
+    P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -68,7 +68,7 @@ where
 
 impl<P, R> Tree<P, R>
 where
-    P: RenderPrimitive,
+    P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
 {
     fn empty(tx: mpsc::UnboundedSender<Event<P, R>>) -> Self {
@@ -212,7 +212,7 @@ where
             walker: &mut DiffWalker<P, R, RF, AF, UF>,
         ) -> Result<(), R::Error>
         where
-            P: RenderPrimitive,
+            P: RenderPrimitive + 'static,
             R: Renderer<P> + 'static,
             RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
             AF: FnMut(&Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
@@ -379,7 +379,7 @@ type SharedNodes<P, R> = Arc<RwLock<Nodes<P, R>>>;
 #[derivative(Debug(bound = ""))]
 enum Event<P, R>
 where
-    P: RenderPrimitive,
+    P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
 {
     Render {
@@ -407,7 +407,7 @@ impl FiberId {
 #[derivative(Debug(bound = ""), Clone(bound = ""))]
 struct Fiber<P, R>
 where
-    P: RenderPrimitive,
+    P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
 {
     id: FiberId,
@@ -774,7 +774,7 @@ impl FiberComponentContext {
 
 impl<'r, P, R> Fiber<P, R>
 where
-    P: RenderPrimitive,
+    P: RenderPrimitive + 'static,
     R: Renderer<P>,
 {
     fn new(event_tx: mpsc::UnboundedSender<Event<P, R>>, body: FiberBody<P, R>) -> Self {
@@ -869,12 +869,18 @@ where
                 state,
                 ..
             }) => {
+                let event_tx = self.event_tx.clone();
                 let mut context = RenderContext {
                     state_pointer: Cell::new(0),
                     state: state.clone(),
                     new_state: RefCell::new(MutableState::new()),
                     fiber_index,
                     internal_events_tx: self.internal_events_tx.clone(),
+                    trigger_rerender: Arc::new(move || {
+                        event_tx
+                            .send(Event::RequestUpdate { index: fiber_index })
+                            .unwrap();
+                    }),
                 };
                 let children = self.children().unwrap_or(&[]);
                 let rendered = instance.render(&mut context, props.as_ref(), children)?;
@@ -908,14 +914,16 @@ enum FiberUpdate {
     },
 }
 
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct RenderContext {
     state_pointer: Cell<usize>,
     new_state: RefCell<MutableState>,
     fiber_index: FiberIndex,
     state: Vec<Box<dyn StoredState>>,
     internal_events_tx: channel::Sender<FiberUpdate>,
-    trigger_rerender: Box<dyn Fn()>,
+    #[derivative(Debug = "ignore")]
+    trigger_rerender: Arc<dyn Fn()>,
 }
 
 #[derive(Debug)]
@@ -970,6 +978,7 @@ impl RenderContext {
         let pointer = self.pointer();
         let fiber_index = self.fiber_index;
         let tx = self.internal_events_tx.clone();
+        let rerender = self.trigger_rerender.clone();
         let setter = {
             move |new_state: T| {
                 tx.send(FiberUpdate::SetState {
@@ -977,6 +986,7 @@ impl RenderContext {
                     value: Box::new(new_state),
                 })
                 .unwrap();
+                rerender();
             }
         };
         let current_value = if let Some(state) = self.current_state() {
@@ -1422,7 +1432,7 @@ fn build_tree<'a, P, R>(
     element: &Element<P>,
 ) -> Result<NodeIndex, R::Error>
 where
-    P: RenderPrimitive,
+    P: RenderPrimitive + 'static,
     R: Renderer<P>,
 {
     // debug!("rendering a {:?}\n\n", element);
@@ -1483,7 +1493,7 @@ type TaskResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 struct RenderTask<P, R>
 where
-    P: RenderPrimitive,
+    P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
 {
     root: Element<P>,
@@ -1506,7 +1516,7 @@ fn create_root<P, R>(
     fibers: &mut Arena<Fiber<P, R>>,
 ) -> (NodeIndex, FiberIndex)
 where
-    P: RenderPrimitive,
+    P: RenderPrimitive + 'static,
     R: Renderer<P>,
 {
     let mut root_fiber = Fiber::root(event_tx);
@@ -1548,7 +1558,7 @@ where
 
 struct UpdateFiberTask<P, R>
 where
-    P: RenderPrimitive,
+    P: RenderPrimitive + 'static,
     R: Renderer<P> + 'static,
 {
     fiber: FiberIndex,
