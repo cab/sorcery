@@ -73,7 +73,7 @@ where
     fn empty(tx: mpsc::UnboundedSender<ComponentUpdate>) -> Self {
         let mut nodes = Arena::new();
         let mut fibers = Arena::new();
-        let (root_node_index, root_fiber_index) = create_root(tx, &mut nodes, &mut fibers);
+        let (root_node_index, root_fiber_index) = create_root(&mut nodes, &mut fibers);
         Self::new(nodes, root_node_index, fibers, root_fiber_index)
     }
 
@@ -419,7 +419,6 @@ where
     id: FiberId,
     node_index: Option<NodeIndex>,
     body: Option<FiberBody<P, R>>,
-    tx: mpsc::UnboundedSender<ComponentUpdate>,
     // props: Box<dyn StoredProps>,
     // state: Box<dyn StoredState>,
     // children: Vec<Element<P>>,
@@ -784,26 +783,24 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    fn new(tx: mpsc::UnboundedSender<ComponentUpdate>, body: FiberBody<P, R>) -> Self {
+    fn new(body: FiberBody<P, R>) -> Self {
         Self {
             id: FiberId::gen(),
             node_index: None,
             dirty: false,
             body: Some(body),
-            tx,
         }
     }
 
-    fn root(tx: mpsc::UnboundedSender<ComponentUpdate>) -> Self {
-        Self::new(tx, FiberBody::Root)
+    fn root() -> Self {
+        Self::new(FiberBody::Root)
     }
 
-    fn text(tx: mpsc::UnboundedSender<ComponentUpdate>, text: String) -> Self {
-        Self::new(tx, FiberBody::Text(text, None))
+    fn text(text: String) -> Self {
+        Self::new(FiberBody::Text(text, None))
     }
 
     fn component(
-        tx: mpsc::UnboundedSender<ComponentUpdate>,
         instance: Box<dyn AnyComponent<P>>,
         props: Box<dyn StoredProps>,
         children: Vec<Element<P>>,
@@ -814,22 +811,17 @@ where
             props,
             children,
         };
-        Self::new(tx, body)
+        Self::new(body)
     }
 
-    fn native(
-        tx: mpsc::UnboundedSender<ComponentUpdate>,
-        instance: P,
-        props: P::Props,
-        children: Vec<Element<P>>,
-    ) -> Self {
+    fn native(instance: P, props: P::Props, children: Vec<Element<P>>) -> Self {
         let body = FiberBody::Native {
             instance,
             props,
             native_instance_key: None,
             children,
         };
-        Self::new(tx, body)
+        Self::new(body)
     }
 
     fn children(&self) -> Option<&[Element<P>]> {
@@ -863,7 +855,6 @@ where
                 let mut context = RenderContext {
                     state_pointer: Cell::new(0),
                     state: state.clone(),
-                    component_tx: self.tx.clone(),
                     fiber_index,
                 };
                 let children = self.children().unwrap_or(&[]);
@@ -890,7 +881,6 @@ pub struct RenderContext {
     state_pointer: Cell<usize>,
     state: Vec<Box<dyn StoredState>>,
     fiber_index: FiberIndex,
-    component_tx: mpsc::UnboundedSender<ComponentUpdate>,
 }
 
 #[derive(Debug)]
@@ -914,29 +904,12 @@ impl RenderContext {
     where
         T: StoredState + Clone + 'static,
     {
-        let tx = self.component_tx.clone();
         let pointer = self.pointer();
         let fiber_index = self.fiber_index;
-        let setter = {
-            let tx = tx.clone();
-            move |new_state: T| {
-                tx.send(ComponentUpdate::SetState {
-                    pointer,
-                    fiber_index,
-                    value: Box::new(new_state),
-                })
-                .unwrap();
-            }
-        };
+        let setter = { move |new_state: T| {} };
         let current_value = if let Some(state) = self.current_state() {
             Any::downcast_ref::<T>(state.as_ref().as_any()).unwrap() // todo
         } else {
-            tx.send(ComponentUpdate::InitializeState {
-                fiber_index,
-                pointer,
-                value: Box::new(initial.clone()),
-            })
-            .unwrap();
             initial
         };
         self.increment_pointer();
@@ -1322,56 +1295,43 @@ where
     pub async fn run(&mut self) {
         debug!("running");
         let mut current_element = None;
-        loop {
-            tokio::select! {
-                Some(event) = self.component_events_rx.recv() => {
-                    debug!("component event: {:?}", event);
-                    match event {
-                        ComponentUpdate::SetState {
-                            pointer, fiber_index,
-                            value
-                        } => {
-                            self.events_tx.send(Event::SetState {
-                                pointer, fiber_index, value
-                            }).unwrap();
-                        },
-                        ComponentUpdate::InitializeState {pointer, value, fiber_index} => {
-                            self.events_tx.send(Event::InitializeState { pointer, value, fiber_index}).unwrap();
-                        }
-                    };
-
+        while let Some(event) = self.events_rx.recv().await {
+            // debug!("event: {:?}", event);
+            match event {
+                Event::Render { mut tree, element } => {
+                    self.commit(tree).unwrap();
+                    current_element = Some(element);
                 }
-                Some(event) = self.events_rx.recv() => {
-                    // debug!("event: {:?}", event);
-                match event {
-                    Event::Render {
-                        mut tree,
-                        element,
-                    } => {
-                        self.commit(tree).unwrap();
-                        current_element = Some(element);
-                    },
-                    Event::Rerender { mut tree } => {
-                        self.commit(tree).unwrap();
-                    },
-                    Event::SetState { pointer, fiber_index, value} => {
-                        if let Some(mut fiber) = self.current_tree.as_mut().unwrap().fiber_mut(fiber_index) {
-                            debug!("UPDATING STATE");
-                            fiber.update_state(pointer, value);
-                            self.rerender(fiber_index).unwrap();
-                        } else {
-                            panic!("invalid state set");
-                        }
-                    },
-                    Event::InitializeState {pointer, value, fiber_index} => {
-                        if let Some(mut fiber) = self.current_tree.as_mut().unwrap().fiber_mut(fiber_index) {
-                            fiber.init_state(pointer, value);
-                        }
+                Event::Rerender { mut tree } => {
+                    self.commit(tree).unwrap();
+                }
+                Event::SetState {
+                    pointer,
+                    fiber_index,
+                    value,
+                } => {
+                    if let Some(mut fiber) =
+                        self.current_tree.as_mut().unwrap().fiber_mut(fiber_index)
+                    {
+                        debug!("UPDATING STATE");
+                        fiber.update_state(pointer, value);
+                        self.rerender(fiber_index).unwrap();
+                    } else {
+                        panic!("invalid state set");
                     }
                 }
+                Event::InitializeState {
+                    pointer,
+                    value,
+                    fiber_index,
+                } => {
+                    if let Some(mut fiber) =
+                        self.current_tree.as_mut().unwrap().fiber_mut(fiber_index)
+                    {
+                        fiber.init_state(pointer, value);
+                    }
                 }
-
-            };
+            }
         }
     }
 
@@ -1398,7 +1358,6 @@ where
                 TaskPriority::Immediate,
                 Box::new(RenderTask::<P, R>::new(
                     self.events_tx.clone(),
-                    self.component_events_tx.clone(),
                     element.clone(),
                 )),
             )
@@ -1408,7 +1367,6 @@ where
 }
 
 fn build_tree<'a, P, R>(
-    tx: &mpsc::UnboundedSender<ComponentUpdate>,
     nodes: &mut Arena<Node<P, R>>,
     fibers: &mut Arena<Fiber<P, R>>,
     element: &Element<P>,
@@ -1421,27 +1379,17 @@ where
     let children = element.children();
     let fiber = match element {
         Element::Text(txt) => {
-            let fiber = Fiber::text(tx.clone(), txt.to_owned());
+            let fiber = Fiber::text(txt.to_owned());
             Ok(fiber)
         }
         Element::Component(comp_element) => {
             let instance = comp_element.construct().map_err(Error::Sorcery)?;
-            let fiber = Fiber::component(
-                tx.clone(),
-                instance,
-                comp_element.clone_props(),
-                children.to_vec(),
-            );
+            let fiber = Fiber::component(instance, comp_element.clone_props(), children.to_vec());
             Result::<_, R::Error>::Ok(fiber)
         }
         Element::Native(native) => {
             let instance = native.ty.clone();
-            let fiber = Fiber::native(
-                tx.clone(),
-                instance,
-                native.props.clone(),
-                children.to_vec(),
-            );
+            let fiber = Fiber::native(instance, native.props.clone(), children.to_vec());
             Ok(fiber)
         }
     }?;
@@ -1458,7 +1406,7 @@ where
                 .into_iter()
                 .rev()
                 .fold(Result::<_, R::Error>::Ok(None), |prev, next| {
-                    let child_index = build_tree(tx, nodes, fibers, &next)?;
+                    let child_index = build_tree(nodes, fibers, &next)?;
                     let mut child = nodes.get_mut(*child_index).unwrap();
                     child.parent = Some(node_index);
                     child.sibling = prev?;
@@ -1480,7 +1428,6 @@ where
 {
     root: Element<P>,
     tx: mpsc::UnboundedSender<Event<P, R>>,
-    component_tx: mpsc::UnboundedSender<ComponentUpdate>,
 }
 
 impl<P, R> RenderTask<P, R>
@@ -1488,21 +1435,12 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    fn new(
-        tx: mpsc::UnboundedSender<Event<P, R>>,
-        component_tx: mpsc::UnboundedSender<ComponentUpdate>,
-        root: Element<P>,
-    ) -> Self {
-        Self {
-            root,
-            tx,
-            component_tx,
-        }
+    fn new(tx: mpsc::UnboundedSender<Event<P, R>>, root: Element<P>) -> Self {
+        Self { root, tx }
     }
 }
 
 fn create_root<P, R>(
-    tx: mpsc::UnboundedSender<ComponentUpdate>,
     nodes: &mut Arena<Node<P, R>>,
     fibers: &mut Arena<Fiber<P, R>>,
 ) -> (NodeIndex, FiberIndex)
@@ -1510,7 +1448,7 @@ where
     P: RenderPrimitive,
     R: Renderer<P>,
 {
-    let mut root_fiber = Fiber::root(tx);
+    let mut root_fiber = Fiber::root();
     let root_fiber_index = FiberIndex(fibers.insert(root_fiber));
     let mut root_node = Node::new(root_fiber_index);
     let root_node_index = NodeIndex(nodes.insert(root_node));
@@ -1529,9 +1467,8 @@ where
         let mut nodes = Arena::<Node<P, R>>::new();
         let mut fibers = Arena::<Fiber<P, R>>::new();
         let tree = {
-            let node_index = build_tree(&self.component_tx, &mut nodes, &mut fibers, &self.root)?;
-            let (root_node_index, root_fiber_index) =
-                create_root(self.component_tx.clone(), &mut nodes, &mut fibers);
+            let node_index = build_tree(&mut nodes, &mut fibers, &self.root)?;
+            let (root_node_index, root_fiber_index) = create_root(&mut nodes, &mut fibers);
             let root_node = nodes.get_mut(*root_node_index).unwrap();
             root_node.child = Some(node_index);
             nodes.get_mut(*node_index).unwrap().parent = Some(root_node_index);
@@ -1598,7 +1535,7 @@ where
             new_children.into_iter().rev().fold(
                 Result::<_, R::Error>::Ok(None),
                 move |prev, next| {
-                    let child_node_index = build_tree(&tx, nodes, fibers, &next)?;
+                    let child_node_index = build_tree(nodes, fibers, &next)?;
                     let mut child = nodes.get_mut(*child_node_index).unwrap();
                     child.parent = Some(node_index);
                     child.sibling = prev?;
