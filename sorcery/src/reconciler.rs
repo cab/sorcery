@@ -193,18 +193,18 @@ where
     }
 
     fn walk_diff<RF, AF, UF>(
-        &mut self,
+        &self,
         other: &Self,
         walker: &mut DiffWalker<P, R, RF, AF, UF>,
     ) -> Result<(), R::Error>
     where
         RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
         AF: FnMut(&Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
-        UF: FnMut(&mut Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+        UF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
     {
         fn walk_fiber<'t, P, R, RF, AF, UF>(
-            left: Arc<RefCell<&mut Tree<P, R>>>,
-            left_fiber_index: Option<FiberIndex>,
+            left: &Tree<P, R>,
+            left_fiber_index: Option<&'t Fiber<P, R>>,
             right: &'t Tree<P, R>,
             right_fiber: Option<&'t Fiber<P, R>>,
             walker: &mut DiffWalker<P, R, RF, AF, UF>,
@@ -214,7 +214,7 @@ where
             R: Renderer<P> + 'static,
             RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
             AF: FnMut(&Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
-            UF: FnMut(&mut Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+            UF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
         {
             // debug!(
             //     "comparing {:?} vs {:?} ======= {:?}",
@@ -223,29 +223,22 @@ where
             //     left_fiber == right_fiber
             // );
             match (left_fiber_index, right_fiber) {
-                (Some(left_fiber_index), Some(right_fiber)) => {
+                (Some(left_fiber), Some(right_fiber)) => {
                     // debug!("comparing {:?} vs {:?}", left_fiber.body, right_fiber.body);
-                    {
-                        let mut left = left.borrow_mut();
-                        let left_fiber = left.fiber_mut(left_fiber_index).unwrap();
-                        if left_fiber != right_fiber {
-                            if left_fiber.can_update_with(right_fiber) {
-                                (walker.update)(left_fiber, right_fiber, right)?;
-                            } else {
-                                debug!("CANANOT UPDAATE THIS");
-                            }
+                    if left_fiber != right_fiber {
+                        if left_fiber.can_update_with(right_fiber) {
+                            (walker.update)(left_fiber, right_fiber, right)?;
                         } else {
-                            debug!("no need to update {:?}", left_fiber.body);
+                            debug!("CANANOT UPDAATE THIS");
                         }
-                    };
+                    } else {
+                        debug!("no need to update {:?}", left_fiber.body);
+                    }
 
-                    let left_children_indexes = {
-                        left.borrow()
-                            .child_fiber_ids(left.borrow().fiber(left_fiber_index).unwrap())
-                    };
+                    let left_children = left.child_fibers(left_fiber);
                     let right_children = right.child_fibers(right_fiber);
                     // debug!("{:?} -> {:?}", left_children, right_children);
-                    match (left_children_indexes, right_children) {
+                    match (left_children, right_children) {
                         (left_children, right_children)
                             if left_children.len() == right_children.len() =>
                         {
@@ -253,7 +246,7 @@ where
                             // debug!("updating all children ({:?})", len);
                             for index in 0..len {
                                 walk_fiber(
-                                    left.clone(),
+                                    left,
                                     Some(left_children[index]),
                                     right,
                                     Some(right_children[index]),
@@ -264,7 +257,7 @@ where
                         (left_children, right_children) if left_children.len() == 0 => {
                             // debug!("appending new children");
                             for child in right_children {
-                                walk_fiber(left.clone(), None, right, Some(child), walker)?;
+                                walk_fiber(left, None, right, Some(child), walker)?;
                             }
                         }
                         (left_children, right_children) if right_children.len() == 0 => {
@@ -278,7 +271,7 @@ where
                 (None, Some(right_fiber)) => {
                     debug!("appending new child");
                     for child in right.child_fibers(right_fiber) {
-                        walk_fiber(left.clone(), None, right, Some(child), walker)?;
+                        walk_fiber(left, None, right, Some(child), walker)?;
                     }
                     (walker.append)(right_fiber, right)?;
                 }
@@ -291,12 +284,11 @@ where
             }
             Ok(())
         }
-        let root_fiber_index = self.root_fiber_index;
+        let root_fiber = self.root_fiber();
         let other_root_fiber = other.root_fiber();
-        let left = Arc::new(RefCell::new(self));
         walk_fiber(
-            left,
-            Some(root_fiber_index),
+            self,
+            Some(root_fiber),
             other,
             Some(other_root_fiber),
             walker,
@@ -311,7 +303,7 @@ where
     R: Renderer<P>,
     RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
     AF: FnMut(&Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
-    UF: FnMut(&mut Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+    UF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
 {
     replace: RF,
     append: AF,
@@ -326,7 +318,7 @@ where
     R: Renderer<P>,
     RF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
     AF: FnMut(&Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
-    UF: FnMut(&mut Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
+    UF: FnMut(&Fiber<P, R>, &Fiber<P, R>, &Tree<P, R>) -> Result<(), R::Error>,
 {
     fn new(replace: RF, append: AF, update: UF) -> Self {
         Self {
