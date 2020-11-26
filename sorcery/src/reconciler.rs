@@ -9,11 +9,12 @@ use derivative::Derivative;
 use generational_arena::{Arena, Index};
 use std::{
     any::{Any, TypeId},
-    cell::{Cell, RefCell},
+    cell::{Cell, Ref, RefCell, RefMut},
     collections::{HashMap, VecDeque},
     fmt,
     future::Future,
     marker::PhantomData,
+    ops::{Deref, DerefMut},
     sync::Arc,
 };
 use tokio::sync::{mpsc, RwLock};
@@ -388,15 +389,8 @@ where
     Rerender {
         tree: Tree<P, R>,
     },
-    SetState {
-        pointer: usize,
-        fiber_index: FiberIndex,
-        value: Box<dyn StoredState>,
-    },
-    InitializeState {
-        pointer: usize,
-        fiber_index: FiberIndex,
-        value: Box<dyn StoredState>,
+    RequestUpdate {
+        index: FiberIndex,
     },
 }
 
@@ -423,7 +417,9 @@ where
     // props: Box<dyn StoredProps>,
     // state: Box<dyn StoredState>,
     // children: Vec<Element<P>>,
-    dirty: bool,
+    updates: Vec<FiberUpdate>,
+    internal_events_tx: channel::Sender<FiberUpdate>,
+    internal_events_rx: channel::Receiver<FiberUpdate>,
 }
 
 #[derive(Derivative)]
@@ -507,6 +503,7 @@ where
     }
 
     fn init_state(&mut self, pointer: usize, state: Box<dyn StoredState>) {
+        debug!("initializing state");
         if let Some(mut body) = self.body.as_mut() {
             body.init_state(pointer, state);
         }
@@ -541,10 +538,6 @@ where
             Some(FiberBody::Text(_, instance)) => instance.as_ref(),
             _ => None,
         }
-    }
-
-    fn mark_dirty(&mut self) {
-        self.dirty = true;
     }
 }
 
@@ -785,12 +778,15 @@ where
     R: Renderer<P>,
 {
     fn new(event_tx: mpsc::UnboundedSender<Event<P, R>>, body: FiberBody<P, R>) -> Self {
+        let (internal_events_tx, internal_events_rx) = channel::unbounded();
         Self {
             id: FiberId::gen(),
             node_index: None,
-            dirty: false,
+            updates: Vec::new(),
             body: Some(body),
             event_tx,
+            internal_events_rx,
+            internal_events_tx,
         }
     }
 
@@ -848,6 +844,19 @@ where
         }
     }
 
+    fn commit(&mut self, update: FiberUpdate, index: FiberIndex) -> crate::Result<()> {
+        match update {
+            FiberUpdate::InitState { pointer, value } => {
+                self.init_state(pointer, value);
+            }
+            FiberUpdate::SetState { .. } => {
+                unimplemented!();
+                self.event_tx.send(Event::RequestUpdate { index }).unwrap();
+            }
+        }
+        Ok(())
+    }
+
     fn render(&mut self, fiber_index: FiberIndex) -> crate::Result<Vec<Element<P>>> {
         let children = match &self.body {
             Some(FiberBody::Root) => {
@@ -863,14 +872,17 @@ where
                 let mut context = RenderContext {
                     state_pointer: Cell::new(0),
                     state: state.clone(),
+                    new_state: RefCell::new(MutableState::new()),
                     fiber_index,
+                    internal_events_tx: self.internal_events_tx.clone(),
                 };
                 let children = self.children().unwrap_or(&[]);
-                Ok(vec![instance.render(
-                    &mut context,
-                    props.as_ref(),
-                    children,
-                )?])
+                let rendered = instance.render(&mut context, props.as_ref(), children)?;
+                let updates: Vec<_> = context.new_state.into_inner().into();
+                for update in updates {
+                    self.internal_events_tx.send(update).unwrap();
+                }
+                Ok(vec![rendered])
             }
             Some(FiberBody::Native {
                 instance, props, ..
@@ -883,16 +895,55 @@ where
         Ok(children)
     }
 }
-// TODO(cab) instead of using context, we should wrap AnyComponent in an "Instance"
-#[derive(Debug)]
-pub struct RenderContext {
-    state_pointer: Cell<usize>,
-    state: Vec<Box<dyn StoredState>>,
-    fiber_index: FiberIndex,
+
+#[derive(Debug, Clone)]
+enum FiberUpdate {
+    SetState {
+        pointer: usize,
+        value: Box<dyn StoredState>,
+    },
+    InitState {
+        pointer: usize,
+        value: Box<dyn StoredState>,
+    },
 }
 
 #[derive(Debug)]
-enum RenderOp {}
+pub struct RenderContext {
+    state_pointer: Cell<usize>,
+    new_state: RefCell<MutableState>,
+    fiber_index: FiberIndex,
+    state: Vec<Box<dyn StoredState>>,
+    internal_events_tx: channel::Sender<FiberUpdate>,
+    trigger_rerender: Box<dyn Fn()>,
+}
+
+#[derive(Debug)]
+struct MutableState {
+    new_state: Vec<(usize, Box<dyn StoredState>)>,
+}
+
+impl Into<Vec<FiberUpdate>> for MutableState {
+    fn into(self) -> Vec<FiberUpdate> {
+        let mut updates = Vec::new();
+        for (pointer, value) in self.new_state {
+            updates.push(FiberUpdate::InitState { pointer, value })
+        }
+        updates
+    }
+}
+
+impl MutableState {
+    fn new() -> Self {
+        Self {
+            new_state: Vec::new(),
+        }
+    }
+
+    fn create(&mut self, pointer: usize, value: Box<dyn StoredState>) {
+        self.new_state.push((pointer, value));
+    }
+}
 
 impl RenderContext {
     fn current_state(&self) -> Option<&Box<dyn StoredState>> {
@@ -908,16 +959,30 @@ impl RenderContext {
         self.state_pointer.get()
     }
 
-    pub fn use_state<'i, T>(&'i self, initial: &'i T) -> (&'i T, impl Fn(T) + Clone + 'static)
+    fn insert_state(&self, state: Box<dyn StoredState>) {
+        self.new_state.borrow_mut().create(self.pointer(), state);
+    }
+
+    pub fn use_state<'r, T>(&'r self, initial: &'r T) -> (&'r T, impl Fn(T) + Clone + 'static)
     where
         T: StoredState + Clone + 'static,
     {
         let pointer = self.pointer();
         let fiber_index = self.fiber_index;
-        let setter = { move |new_state: T| {} };
+        let tx = self.internal_events_tx.clone();
+        let setter = {
+            move |new_state: T| {
+                tx.send(FiberUpdate::SetState {
+                    pointer,
+                    value: Box::new(new_state),
+                })
+                .unwrap();
+            }
+        };
         let current_value = if let Some(state) = self.current_state() {
             Any::downcast_ref::<T>(state.as_ref().as_any()).unwrap() // todo
         } else {
+            self.insert_state(Box::new(initial.clone()));
             initial
         };
         self.increment_pointer();
@@ -1313,31 +1378,8 @@ where
                 Event::Rerender { mut tree } => {
                     self.commit(tree).unwrap();
                 }
-                Event::SetState {
-                    pointer,
-                    fiber_index,
-                    value,
-                } => {
-                    if let Some(mut fiber) =
-                        self.current_tree.as_mut().unwrap().fiber_mut(fiber_index)
-                    {
-                        debug!("UPDATING STATE");
-                        fiber.update_state(pointer, value);
-                        self.rerender(fiber_index).unwrap();
-                    } else {
-                        panic!("invalid state set");
-                    }
-                }
-                Event::InitializeState {
-                    pointer,
-                    value,
-                    fiber_index,
-                } => {
-                    if let Some(mut fiber) =
-                        self.current_tree.as_mut().unwrap().fiber_mut(fiber_index)
-                    {
-                        fiber.init_state(pointer, value);
-                    }
+                Event::RequestUpdate { index } => {
+                    self.rerender(index).unwrap();
                 }
             }
         }
