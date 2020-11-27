@@ -16,7 +16,7 @@ pub fn start() -> Result<(), JsValue> {
     Ok(())
 }
 
-#[component(Html)]
+#[component]
 fn app(
     context: &mut RenderContext,
     props: &(),

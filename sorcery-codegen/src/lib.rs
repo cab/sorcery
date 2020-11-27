@@ -5,13 +5,13 @@ use proc_macro2::Span;
 use quote::{format_ident, quote, quote_spanned};
 use syn::{
     parse_macro_input, parse_quote, Attribute, AttributeArgs, Expr, GenericArgument, Generics,
-    Ident, Index, ItemFn, Lit, Meta, PathArguments, Signature, Type, Visibility,
+    Ident, Index, ItemFn, Lit, Meta, Path, PathArguments, Signature, Type, Visibility,
 };
 
 #[derive(Debug, FromMeta)]
 struct ComponentAttr {
     #[darling(default)]
-    element: Option<Ident>,
+    element: Option<Path>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -22,6 +22,8 @@ enum Error {
     InvalidPropType,
     #[error("invalid generic parameter")]
     InvalidGeneric,
+    #[error("invalid element type: {0:?}")]
+    InvalidElementType(Type),
 }
 
 impl Error {
@@ -43,7 +45,7 @@ pub fn component(args: TokenStream, item: TokenStream) -> TokenStream {
     let attr = if args.is_empty() {
         Ok(ComponentAttr { element: None })
     } else {
-        let attr_args = parse_macro_input!(args as Ident);
+        let attr_args = parse_macro_input!(args as Path);
         Ok(ComponentAttr {
             element: Some(attr_args),
         })
@@ -68,9 +70,29 @@ pub fn component(args: TokenStream, item: TokenStream) -> TokenStream {
 struct Config {
     name: Ident,
     prop_type: Option<Type>,
-    element_type: Option<Ident>,
+    element_type: Option<Type>,
     element_generic: Option<Ident>,
     render: syn::Block,
+}
+
+fn unwrap_element(ty: &Type) -> Option<syn::Type> {
+    match ty {
+        Type::Path(typepath) if typepath.qself.is_none() => {
+            // Get the first segment of the path (there is only one, in fact: "Option"):
+            let type_params = &typepath.path.segments.iter().next().unwrap().arguments;
+            // It should have only on angle-bracketed param ("<String>"):
+            let generic_arg = match type_params {
+                PathArguments::AngleBracketed(params) => params.args.iter().next().unwrap(),
+                _ => panic!("TODO: error handling"),
+            };
+            // This argument must be a type:
+            match generic_arg {
+                GenericArgument::Type(ty) => Some(ty.clone()),
+                _ => None,
+            }
+        }
+        _ => panic!("TODO: error handling"),
+    }
 }
 
 impl Config {
@@ -100,8 +122,31 @@ impl Config {
                 _ => Err(Error::InvalidGeneric),
             })
             .transpose()?;
+
+        let inferred_element_type = item
+            .sig
+            .inputs
+            .iter()
+            .nth(2)
+            .map(|arg| match arg {
+                syn::FnArg::Typed(ty) => match ty.ty.as_ref() {
+                    syn::Type::Reference(syn::TypeReference { elem, .. }) => match elem.as_ref() {
+                        Type::Slice(syn::TypeSlice { elem, .. }) => {
+                            unwrap_element(&elem).ok_or(Error::InvalidElementType(*elem.clone()))
+                        }
+                        other => Err(Error::InvalidElementType(other.clone())),
+                    },
+                    other => Err(Error::InvalidElementType(other.clone())),
+                },
+                _ => Err(Error::InvalidPropType),
+            })
+            .transpose()?;
+
         Ok(Config {
-            element_type: attr.element,
+            element_type: attr
+                .element
+                .map(|path| syn::Type::Path(syn::TypePath { qself: None, path }))
+                .or(inferred_element_type),
             element_generic,
             name,
             prop_type,
