@@ -30,12 +30,12 @@ fn app(
 
     Ok(rsx! {
         <div style="user-select: none; cursor: pointer;" class="test-class"><span on_click={{ let greeting = greeting.to_owned(); let counter = *counter; move |e: &ClickEvent| {
-            // debug!("clicked from rsx ({:?}): {:?}", g, e.native);
-            // if &greeting == &"hello" {
-            //     set_greeting("goodbye");
-            // } else {
-            //     set_greeting("hello");
-            // }
+            debug!("clicked from rsx ({:?}): {:?}", g, e.native);
+            if &greeting == &"hello" {
+                set_greeting("goodbye");
+            } else {
+                set_greeting("hello");
+            }
             set_counter(counter + 1);
         }}}>{&greeting}</span> " (" {counter} ") "
             <span key="blue">

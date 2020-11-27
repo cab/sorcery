@@ -573,6 +573,7 @@ where
     container: Arc<RefCell<R::Container>>,
     renderer: Arc<RefCell<R>>,
     current_tree: Option<Tree<P, R>>,
+    last_tree: Option<Tree<P, R>>,
     events_tx: mpsc::UnboundedSender<Event<P, R>>,
     events_rx: mpsc::UnboundedReceiver<Event<P, R>>,
 }
@@ -1389,6 +1390,7 @@ where
             container: Arc::new(RefCell::new(container)),
             renderer: Arc::new(RefCell::new(renderer)),
             current_tree: None,
+            last_tree: None,
             events_tx,
             events_rx,
         }
@@ -1612,8 +1614,8 @@ where
                 }
             },
         );
-        if let Some(current_tree) = self.current_tree.as_mut() {
-            current_tree.walk_diff(&tree, &mut walker)?;
+        if let Some(last_tree) = self.last_tree.as_mut() {
+            last_tree.walk_diff(&tree, &mut walker)?;
             self.current_tree = Some(tree);
         } else {
             Tree::empty(self.events_tx.clone()).walk_diff(&tree, &mut walker)?;
@@ -1638,9 +1640,15 @@ where
         }
     }
 
+    fn take_and_swap_tree(&mut self) -> Option<Tree<P, R>> {
+        let current_tree = self.current_tree.take()?;
+        self.last_tree = Some(current_tree.clone());
+        Some(current_tree)
+    }
+
     fn rerender(&mut self) -> Result<(), R::Error> {
         debug!("rerendering");
-        if let Some(current_tree) = self.current_tree.clone() {
+        if let Some(current_tree) = self.take_and_swap_tree() {
             self.renderer
                 .borrow_mut()
                 .schedule_local_task(
@@ -1653,8 +1661,10 @@ where
                 .unwrap();
             Ok(())
         } else {
-            warn!("could not rerender, no current tree. arae you updating state in `render`?");
-            panic!("could not rerender, no current tree. arae you updating state in `render`?");
+            trace!("tree already taken");
+            // warn!("could not rerender, no current tree. arae you updating state in `render`?");
+            // panic!("could not rerender, no current tree. arae you updating state in `render`?");
+            // self.events_tx.send(Event::RequestUpdate).unwrap();
             Ok(())
         }
     }
