@@ -10,6 +10,13 @@ use tracing::{debug, trace, warn};
 use wasm_bindgen::{prelude::*, JsCast};
 use web_sys::{Document, Element, HtmlElement, Node};
 
+#[macro_export]
+macro_rules! rsx {
+    ($($element:tt)*) => {
+        sorcery::rsx! { $crate::Html, $($element)* }
+    };
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("javascript error: {0:?}")]

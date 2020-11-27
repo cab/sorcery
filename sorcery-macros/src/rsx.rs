@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use quote::{quote, format_ident};
 use std::collections::HashMap;
-use syn::{Expr, Field, Ident, Result, Token, braced, parse::{Parse, ParseStream}, parse_macro_input, punctuated::Punctuated, parse_quote, token};
+use syn::{Expr, Path, Field, Ident, Result, Token, braced, parse::{Parse, ParseStream}, parse_macro_input, punctuated::Punctuated, parse_quote, token};
 
 fn expand_props(builder: Expr, props: &HashMap<Ident, Expr>) -> proc_macro2::TokenStream {
     let pairs = props
@@ -24,13 +24,13 @@ fn expand_props(builder: Expr, props: &HashMap<Ident, Expr>) -> proc_macro2::Tok
 }
 
 struct Input {
-    primitive: Ident,
+    primitive: Path,
     element: Element
 }
 
 impl Parse for Input {
     fn parse(input: ParseStream) -> Result<Self> {
-        let primitive = input.parse::<Ident>()?;
+        let primitive = input.parse::<Path>()?;
         let comma = input.parse::<Token![,]>()?;
         let element = input.parse::<Element>()?;
         Ok(Self {
