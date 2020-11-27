@@ -39,8 +39,7 @@ impl Error {
     }
 }
 
-#[proc_macro_attribute]
-pub fn component(args: TokenStream, item: TokenStream) -> TokenStream {
+pub fn component_impl(args: TokenStream, item: TokenStream) -> TokenStream {
     let mut input = parse_macro_input!(item as ItemFn);
     let attr = if args.is_empty() {
         Ok(ComponentAttr { element: None })

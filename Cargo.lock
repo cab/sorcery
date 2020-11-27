@@ -604,7 +604,6 @@ dependencies = [
  "derivative",
  "dyn-clone",
  "generational-arena",
- "sorcery-codegen",
  "sorcery-macros",
  "test-env-log",
  "thiserror",
@@ -612,18 +611,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber 0.1.6",
  "uuid",
-]
-
-[[package]]
-name = "sorcery-codegen"
-version = "0.1.0"
-dependencies = [
- "darling",
- "heck",
- "proc-macro2",
- "quote",
- "syn",
- "thiserror",
 ]
 
 [[package]]
@@ -648,9 +635,12 @@ dependencies = [
 name = "sorcery-macros"
 version = "0.1.0"
 dependencies = [
+ "darling",
+ "heck",
  "proc-macro2",
  "quote",
  "syn",
+ "thiserror",
 ]
 
 [[package]]

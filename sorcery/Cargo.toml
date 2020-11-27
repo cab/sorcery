@@ -18,7 +18,6 @@ crossbeam-channel = "^0.5"
 derivative = "^2.0"
 dyn-clone = "^1.0"
 generational-arena = "0.2.8"
-sorcery-codegen = {path = "../sorcery-codegen"}
 sorcery-macros = {path = "../sorcery-macros"}
 thiserror = "^1.0"
 tokio = {version = "^0.3", default-features = false, features = ["sync", "macros"]}

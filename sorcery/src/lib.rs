@@ -1,5 +1,4 @@
 use dyn_clone::DynClone;
-pub use sorcery_codegen::component;
 use std::{
     any::{Any, TypeId},
     fmt::{self, Debug},
@@ -7,7 +6,7 @@ use std::{
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-pub use sorcery_macros::{rsx, Props};
+pub use sorcery_macros::{component, rsx, Props};
 
 pub mod reconciler;
 

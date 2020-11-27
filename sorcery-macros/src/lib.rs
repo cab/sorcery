@@ -1,5 +1,6 @@
 extern crate proc_macro;
 
+mod component;
 mod rsx;
 
 use proc_macro::TokenStream;
@@ -21,6 +22,11 @@ use rsx::rsx_impl;
 #[proc_macro]
 pub fn rsx(tokens: TokenStream) -> TokenStream {
     rsx_impl(tokens)
+}
+
+#[proc_macro_attribute]
+pub fn component(args: TokenStream, item: TokenStream) -> TokenStream {
+    component::component_impl(args, item)
 }
 
 fn unwrap_option(ty: &Type) -> Option<syn::Type> {
