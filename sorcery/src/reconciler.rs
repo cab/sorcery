@@ -325,29 +325,55 @@ where
                 debug!("render_at for {:?}", fiber.body);
                 let mut previous_child_node_index: Option<NodeIndex> = None;
 
-                let first_child_index = fiber.render()?.iter().enumerate().rev().fold(
+                let first_child_index = fiber.render()?.into_iter().enumerate().rev().fold(
                     Result::<_, R::Error>::Ok(None),
                     |prev, (index, next)| {
                         let existing_child = {
                             child_fiber_ids
                                 .get(index)
                                 .and_then(|index| self.fiber_mut(*index))
-                                .filter(|fiber| fiber.is_same(next))
+                                .filter(|fiber| fiber.is_same(&next))
                         };
                         if let Some(existing) = existing_child {
                             debug!("reusing existing");
-                            let node_index = existing.node_index.unwrap();
+                            let child_node_index = existing.node_index.unwrap();
                             let new_children = next.children();
                             if new_children.len() > 0 {
                                 existing.update_children(new_children.to_owned());
                             }
-                            self.render_at(events_tx, node_index)?;
-                            let mut child = self.nodes.get_mut(*node_index).unwrap();
+                            match (&mut existing.body, next) {
+                                (
+                                    Some(FiberBody::Component { ref mut props, .. }),
+                                    Element::Component(ComponentElement {
+                                        props: new_props, ..
+                                    }),
+                                ) => {
+                                    *props = new_props;
+                                }
+                                (
+                                    Some(FiberBody::Native { ref mut props, .. }),
+                                    Element::Native(NativeElement {
+                                        props: new_props, ..
+                                    }),
+                                ) => {
+                                    *props = new_props;
+                                }
+                                (
+                                    Some(FiberBody::Text(ref mut string, _)),
+                                    Element::Text(new_string),
+                                ) => {
+                                    *string = new_string;
+                                }
+                                _ => {}
+                            }
+                            self.render_at(events_tx, child_node_index)?;
+                            let mut child = self.nodes.get_mut(*child_node_index).unwrap();
+                            child.parent = Some(node_index);
                             child.sibling = prev?;
-                            Ok(Some(node_index))
+                            Ok(Some(child_node_index))
                         } else {
                             let (child_fiber_index, child_node_index) =
-                                self.render_element(events_tx.clone(), next)?;
+                                self.render_element(events_tx.clone(), &next)?;
                             self.render_at(events_tx, child_node_index)?;
                             let mut child = self.nodes.get_mut(*child_node_index).unwrap();
                             child.parent = Some(node_index);
@@ -668,7 +694,8 @@ where
                 }),
             ) => instance == ty,
             (Element::Text(string), Some(FiberBody::Text(other_string, _))) => {
-                string == other_string
+                // text nodes can be reused
+                true
             }
             _ => false,
         }
@@ -1180,7 +1207,7 @@ impl RenderContext {
 }
 
 #[derive(derivative::Derivative)]
-#[derivative(Clone(bound = ""))]
+#[derivative(Clone(bound = ""), Debug(bound = ""))]
 enum FiberBody<P, R>
 where
     P: RenderPrimitive,
@@ -1200,30 +1227,6 @@ where
         props: P::Props,
         children: Vec<Element<P>>,
     },
-}
-
-impl<P, R> fmt::Debug for FiberBody<P, R>
-where
-    P: RenderPrimitive,
-    R: Renderer<P>,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FiberBody::Component { instance, .. } => f
-                .debug_struct("FiberBody::Component")
-                .field("instance", instance)
-                .finish(),
-            FiberBody::Text(string, _) => f
-                .debug_struct("FiberBody::Text")
-                .field("string", string)
-                .finish(),
-            FiberBody::Native { instance, .. } => f
-                .debug_struct("FiberBody::Native")
-                .field("instance", instance)
-                .finish(),
-            FiberBody::Root(_) => f.debug_struct("FiberBody::Root").finish(),
-        }
-    }
 }
 
 impl<P, R> FiberBody<P, R>
@@ -1383,15 +1386,18 @@ where
 
     fn create_instances(&mut self, tree: &mut Tree<P, R>) -> Result<(), R::Error> {
         debug!("creating instances");
+        let mut count = 0;
         tree.walk_with_mut_fibers(|_, fiber, _, _, _| {
             match &mut fiber.body {
                 Some(FiberBody::Text(txt, ref mut instance_key)) if instance_key.is_none() => {
+                    debug!("creating new text instance for {}", txt);
                     *instance_key = Some(
                         self.renderer
                             .borrow_mut()
                             .create_text_instance(&txt)
                             .map_err(Error::RendererError)?,
                     );
+                    count += 1;
                 }
                 Some(FiberBody::Native {
                     ref mut native_instance_key,
@@ -1399,6 +1405,7 @@ where
                     props,
                     ..
                 }) if native_instance_key.is_none() => {
+                    debug!("creating new native instance for {:?}", instance);
                     let debug = InstanceDebug {};
                     *native_instance_key = Some(
                         self.renderer
@@ -1406,11 +1413,13 @@ where
                             .create_instance(instance, props, &debug)
                             .map_err(Error::RendererError)?,
                     );
+                    count += 1;
                 }
                 _ => {}
             };
             Ok(())
         })?;
+        debug!("created {} new instances", count);
         Ok(())
     }
 
