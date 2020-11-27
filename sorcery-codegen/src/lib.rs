@@ -118,38 +118,39 @@ impl Config {
         let render = &self.render;
         let result = if let Some(element_type) = self.element_type.as_ref() {
             quote! {
-              fn #fn_name(
-                context: &mut sorcery::ComponentContext,
-                props: &<#name as sorcery::Component<TestElement>>::Props,
-                children: Vec<sorcery::Element<#element_type>>,
-              ) -> sorcery::Result<sorcery::Element<#element_type>> {
-                  #name::create_element(context, props, children)
-              }
+            //   fn #fn_name(
+            //     context: &mut sorcery::RenderContext,
+            //     props: &<#name as sorcery::Component<#element_type>>::Props,
+            //     children: Vec<sorcery::Element<#element_type>>,
+            //   ) -> sorcery::Result<sorcery::Element<#element_type>> {
+            //       #name::create_element(context, props, children)
+            //   }
 
-              fn #fn_name_with_key(
-                  context: &mut sorcery::ComponentContext,
-                  key: impl Into<sorcery::Key>,
-                  props: &<#name as Component<TestElement>>::Props,
-                  children: Vec<sorcery::Element<#element_type>>,
-              ) -> sorcery::Result<sorcery::Element<#element_type>> {
-                  #name::create_element_with_key(context, key, props, children)
-              }
+            //   fn #fn_name_with_key(
+            //       context: &mut sorcery::RenderContext,
+            //       key: impl Into<sorcery::Key>,
+            //       props: &<#name as Component<#element_type>>::Props,
+            //       children: Vec<sorcery::Element<#element_type>>,
+            //   ) -> sorcery::Result<sorcery::Element<#element_type>> {
+            //       #name::create_element_with_key(context, key, props, children)
+            //   }
 
+              #[derive(Copy, Clone, Debug)]
               struct #name {}
 
               impl sorcery::Component<#element_type> for #name {
                   type Props = #prop_type;
 
-                  fn new(id: sorcery::ComponentId, props: &Self::Props) -> Self {
+                  fn new(props: &Self::Props) -> Self {
                     Self {}
                   }
 
                   fn render(
                       &self,
-                      context: &mut sorcery::ComponentContext,
+                      context: &mut sorcery::RenderContext,
                       props: &Self::Props,
-                      _: Vec<sorcery::Element<#element_type>>,
-                  ) -> Result<sorcery::Element<#element_type>> {
+                      _: &[sorcery::Element<#element_type>],
+                  ) -> ::sorcery::Result<sorcery::Element<#element_type>> {
                       (#render).map(|i| i.into())
                   }
               }

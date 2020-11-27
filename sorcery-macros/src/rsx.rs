@@ -23,12 +23,27 @@ fn expand_props(builder: Expr, props: &HashMap<Ident, Expr>) -> proc_macro2::Tok
     }
 }
 
+struct Input {
+    primitive: Ident,
+    element: Element
+}
 
+impl Parse for Input {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let primitive = input.parse::<Ident>()?;
+        let comma = input.parse::<Token![,]>()?;
+        let element = input.parse::<Element>()?;
+        Ok(Self {
+            primitive,
+            element
+        })
+    }
+}
 
 pub fn rsx_impl(tokens: TokenStream) -> TokenStream {
-    let element = parse_macro_input!(tokens as Element);
+    let Input { primitive, element } = parse_macro_input!(tokens as Input);
     let result = element.walk(&Walker::new(
-        |element, children| {
+        { let primitive = primitive.clone(); move |element, children| {
             let tag = &element.tag;
             let tag_name = element.tag.to_string();
             let first_char = tag_name.chars().next().unwrap();
@@ -42,12 +57,12 @@ pub fn rsx_impl(tokens: TokenStream) -> TokenStream {
                     quote!{ (#direct).into() }
                 } else { 
                     expand_props(parse_quote! {
-                        sorcery::Element::<Self::__Primitive>::props_builder()
+                        sorcery::Element::<#primitive>::props_builder()
                     }, &element.props)
                 };
                 // native element
                 quote! {
-                    sorcery::Element::native_for_name(#key, #tag_name, #props, vec![#(#children),*])?
+                    sorcery::Element::<#primitive>::native_for_name(#key, #tag_name, #props, vec![#(#children),*])?
                 }
             } else {
                 let props = if let Some(direct) = &element.direct_props {
@@ -56,19 +71,19 @@ pub fn rsx_impl(tokens: TokenStream) -> TokenStream {
                     expand_props(syn::parse_str("x").unwrap() ,&element.props)
                 };
                 quote! {
-                    sorcery::Element::component::<#tag>(#key, #props, vec![#(#children),*])
+                    sorcery::Element::<#primitive>::component::<#tag>(#key, #props, vec![#(#children),*])
                 }
             }
-        },
-        |text| {
+        }},
+        {let primitive = primitive.clone(); move |text| {
             let inner = match text {
                 Text::Lit(lit) => quote! { #lit },
                 Text::Display(e) => quote! { (#e).to_string() },
             };
             quote! {
-                sorcery::Element::text(#inner)
+                sorcery::Element::<#primitive>::text(#inner)
             }
-        },
+            }    },
     ));
     result.into()
 }

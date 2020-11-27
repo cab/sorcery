@@ -1,5 +1,3 @@
-#![feature(associated_type_defaults)]
-
 use dyn_clone::DynClone;
 pub use sorcery_codegen::component;
 use std::{
@@ -304,8 +302,7 @@ pub trait Component<T>: Clone
 where
     T: RenderPrimitive,
 {
-    type Props: StoredProps;
-    type __Primitive = T;
+    type Props: StoredProps + Clone;
     fn name(&self) -> String {
         std::any::type_name::<Self>().to_string()
     }
@@ -323,7 +320,7 @@ where
 impl<C, P, T> AnyComponent<T> for C
 where
     C: Component<T, Props = P> + Clone + 'static,
-    P: 'static,
+    P: Clone + Debug + 'static,
     T: RenderPrimitive,
 {
     fn kind_id(&self) -> TypeId {

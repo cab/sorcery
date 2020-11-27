@@ -1,4 +1,4 @@
-use sorcery::{rsx, Component, Element, RenderContext};
+use sorcery::{component, rsx, Component, Element, RenderContext};
 use sorcery_dom::{render, ClickEvent, Html};
 use tracing::debug;
 use wasm_bindgen::prelude::*;
@@ -40,7 +40,7 @@ impl Component<Html> for App {
 
         debug!("greeting is {:?}", greeting);
 
-        Ok(rsx! {
+        Ok(rsx! { Html,
             <div style="user-select: none; cursor: pointer;" class="test-class"><span on_click={{ let greeting = greeting.to_owned(); let counter = *counter; move |e: &ClickEvent| {
                 // debug!("clicked from rsx ({:?}): {:?}", g, e.native);
                 // if &greeting == &"hello" {
@@ -59,32 +59,19 @@ impl Component<Html> for App {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Blue {}
+#[component(Html)]
+fn blue(
+    context: &mut RenderContext,
+    props: &String,
+    children: &[Element<Html>],
+) -> sorcery::Result<Element<Html>> {
+    let (counter, set_counter) = context.use_state(&0);
+    debug!("LOL THE COUNTER IS {:?}", counter);
 
-impl Component<Html> for Blue {
-    type Props = String;
-    fn new(props: &Self::Props) -> Self
-    where
-        Self: Sized,
-    {
-        Self {}
-    }
-
-    fn render(
-        &self,
-        context: &mut RenderContext,
-        props: &Self::Props,
-        children: &[Element<Html>],
-    ) -> sorcery::Result<Element<Html>> {
-        let (counter, set_counter) = context.use_state(&0);
-        debug!("LOL THE COUNTER IS {:?}", counter);
-
-        Ok(rsx! {
-            <span style="color: blue; user-select: none; cursor: pointer;"><span on_click={{  let counter = *counter; move |e: &ClickEvent| {
-                debug!("UPDATE COUNTER TO {:?}", counter + 1);
-                set_counter(counter + 1);
-            }}}>{props}</span> " (" {counter} ")"</span>
-        })
-    }
+    Ok(rsx! {Html,
+        <span style="color: blue; user-select: none; cursor: pointer;"><span on_click={{  let counter = *counter; move |e: &ClickEvent| {
+            debug!("UPDATE COUNTER TO {:?}", counter + 1);
+            set_counter(counter + 1);
+        }}}>{props}</span> " (" {counter} ")"</span>
+    })
 }

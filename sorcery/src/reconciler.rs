@@ -341,29 +341,39 @@ where
                             if new_children.len() > 0 {
                                 existing.update_children(new_children.to_owned());
                             }
-                            match (&mut existing.body, next) {
-                                (
-                                    Some(FiberBody::Component { ref mut props, .. }),
+
+                            // we can't match as a tuple with `next` due to https://github.com/rust-lang/rust/issues/68354
+                            match &mut existing.body {
+                                Some(FiberBody::Component { ref mut props, .. }) => match next {
                                     Element::Component(ComponentElement {
-                                        props: new_props, ..
-                                    }),
-                                ) => {
-                                    *props = new_props;
-                                }
-                                (
-                                    Some(FiberBody::Native { ref mut props, .. }),
+                                        props: new_props,
+                                        ..
+                                    }) => {
+                                        *props = new_props;
+                                    }
+                                    _ => {
+                                        warn!("todo");
+                                    }
+                                },
+
+                                Some(FiberBody::Native { ref mut props, .. }) => match next {
                                     Element::Native(NativeElement {
                                         props: new_props, ..
-                                    }),
-                                ) => {
-                                    *props = new_props;
-                                }
-                                (
-                                    Some(FiberBody::Text(ref mut string, _)),
-                                    Element::Text(new_string),
-                                ) => {
-                                    *string = new_string;
-                                }
+                                    }) => {
+                                        *props = new_props;
+                                    }
+                                    _ => {
+                                        warn!("todo");
+                                    }
+                                },
+                                Some(FiberBody::Text(ref mut string, _)) => match next {
+                                    Element::Text(new_string) => {
+                                        *string = new_string;
+                                    }
+                                    _ => {
+                                        warn!("todo");
+                                    }
+                                },
                                 _ => {}
                             }
                             self.render_at(events_tx, child_node_index)?;
