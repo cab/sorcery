@@ -1652,7 +1652,7 @@ where
             self.renderer
                 .borrow_mut()
                 .schedule_local_task(
-                    TaskPriority::Immediate,
+                    TaskPriority::High,
                     Box::new(RenderTask::<P, R>::new(
                         self.events_tx.clone(),
                         current_tree,
@@ -1840,6 +1840,7 @@ where
 #[derive(Debug, Copy, Clone)]
 pub enum TaskPriority {
     Immediate,
+    High,
     Idle,
 }
 

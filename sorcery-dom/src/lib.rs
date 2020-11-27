@@ -180,7 +180,7 @@ impl reconciler::Renderer<Html> for Renderer {
                     task.run().await.unwrap();
                 });
             }
-            TaskPriority::Idle => {
+            TaskPriority::High | TaskPriority::Idle => {
                 web_sys::window()
                     .unwrap()
                     .request_idle_callback(
@@ -208,7 +208,7 @@ impl reconciler::Renderer<Html> for Renderer {
                     task.run().await.unwrap();
                 });
             }
-            TaskPriority::Idle => {
+            TaskPriority::High | TaskPriority::Idle => {
                 web_sys::window()
                     .unwrap()
                     .request_idle_callback(
