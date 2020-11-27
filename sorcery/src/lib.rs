@@ -85,6 +85,7 @@ pub struct ComponentElement<T>
 where
     T: RenderPrimitive,
 {
+    kind_id: TypeId,
     name: Option<String>,
     key: Option<Key>,
     constructor: fn(&dyn StoredProps) -> Result<Box<dyn AnyComponent<T>>>,
@@ -183,6 +184,7 @@ where
         let constructor = |props: &dyn StoredProps| <C as AnyComponent<T>>::new(props);
         let name = std::any::type_name::<C>();
         Element::Component(ComponentElement {
+            kind_id: TypeId::of::<C>(),
             key,
             name: Some(name.to_string()),
             constructor: constructor,
