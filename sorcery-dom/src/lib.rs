@@ -235,7 +235,7 @@ impl reconciler::Renderer<Html> for Renderer {
         debug: &sorcery::reconciler::InstanceDebug,
     ) -> Result<Self::InstanceKey> {
         let mut element = self.document.create_element(&ty.tag)?;
-        element.set_attribute("data-sorcery-fiber-id", &debug.id)?;
+        // element.set_attribute("data-sorcery-fiber-id", &debug.id)?;
         let id = self.nodes.insert(element.unchecked_into());
         self.update_props(id, &props)?;
         Ok(id)
