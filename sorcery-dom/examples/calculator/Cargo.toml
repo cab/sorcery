@@ -2,7 +2,7 @@
 authors = ["conner bryan <conner@amps.io>"]
 edition = "2018"
 license = "MIT"
-name = "counter"
+name = "calculator"
 publish = false
 version = "0.1.0"
 
@@ -10,7 +10,9 @@ version = "0.1.0"
 crate-type = ["cdylib"]
 
 [dependencies]
+anyhow = "^1.0"
 console_error_panic_hook = "^0.1"
+js-sys = {version = "^0.3"}
 sorcery = {path = "../../../sorcery"}
 sorcery-dom = {path = "../../"}
 tracing = "0.1"

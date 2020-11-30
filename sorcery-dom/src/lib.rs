@@ -1,14 +1,15 @@
-use dyn_clone::DynClone;
 use generational_arena::{Arena, Index as ArenaIndex};
-use gloo::{events::EventListener, timers::callback::Timeout};
+use gloo::events::EventListener;
 use sorcery::{
     reconciler::{self, LocalTask, Reconciler, Task, TaskPriority},
-    Props, RenderPrimitive, StoredProps,
+    Props, RenderPrimitive,
 };
-use std::{cell::RefCell, collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, trace, warn};
 use wasm_bindgen::{prelude::*, JsCast};
-use web_sys::{Document, Element, HtmlElement, Node};
+use web_sys::{Document, Element as WebElement, Node};
+
+pub type Element = sorcery::Element<Html>;
 
 #[macro_export]
 macro_rules! rsx {
@@ -47,7 +48,7 @@ pub struct HtmlProps {
 pub struct Callback<A>(Arc<dyn Fn(&A)>);
 
 impl<A> PartialEq<Callback<A>> for Callback<A> {
-    fn eq(&self, other: &Callback<A>) -> bool {
+    fn eq(&self, _: &Callback<A>) -> bool {
         // TODO(cab) is this right?
         // never equal
         false
@@ -80,7 +81,7 @@ impl RenderPrimitive for Html {
 
     fn render(
         &self,
-        props: &Self::Props,
+        _: &Self::Props,
         children: &[sorcery::Element<Self>],
     ) -> sorcery::Result<Vec<sorcery::Element<Self>>> {
         Ok(children.to_vec())
@@ -106,11 +107,11 @@ impl Renderer {
 
 pub fn render(
     document: Document,
-    mut container: Element,
+    container: WebElement,
     element: &sorcery::Element<Html>,
 ) -> reconciler::Result<(), Error> {
     let renderer = Renderer::new(document);
-    let mut reconciler = reconciler::Reconciler::new(renderer, container);
+    let mut reconciler = Reconciler::new(renderer, container);
     reconciler.render(element)?;
     wasm_bindgen_futures::spawn_local(async move {
         reconciler.run().await;
@@ -130,7 +131,7 @@ impl Renderer {
         props: &HtmlProps,
     ) -> std::result::Result<(), Error> {
         self.listeners.remove(&instance);
-        let element: &Element = self.nodes.get(instance).unwrap().unchecked_ref();
+        let element: &WebElement = self.nodes.get(instance).unwrap().unchecked_ref();
         if let Some(f) = &props.on_click {
             let on_click = EventListener::new(element, "click", {
                 let f = f.clone();
@@ -164,7 +165,7 @@ impl Renderer {
 }
 
 impl reconciler::Renderer<Html> for Renderer {
-    type Container = Element;
+    type Container = WebElement;
     type InstanceKey = ArenaIndex;
     type TextInstanceKey = ArenaIndex;
     type Error = Error;
@@ -239,9 +240,9 @@ impl reconciler::Renderer<Html> for Renderer {
         &mut self,
         ty: &Html,
         props: &<Html as RenderPrimitive>::Props,
-        debug: &sorcery::reconciler::InstanceDebug,
+        _: &sorcery::reconciler::InstanceDebug,
     ) -> Result<Self::InstanceKey> {
-        let mut element = self.document.create_element(&ty.tag)?;
+        let element = self.document.create_element(&ty.tag)?;
         // element.set_attribute("data-sorcery-fiber-id", &debug.id)?;
         let id = self.nodes.insert(element.unchecked_into());
         self.update_props(id, &props)?;

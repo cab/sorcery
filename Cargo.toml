@@ -1,2 +1,2 @@
 [workspace]
-members = ["sorcery", "sorcery-macros", "sorcery-dom", "sorcery-dom/examples/counter"]
+members = ["sorcery", "sorcery-macros", "sorcery-dom", "sorcery-dom/examples/counter", "sorcery-dom/examples/calculator"]

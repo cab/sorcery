@@ -39,7 +39,7 @@ pub trait StoredProps: Any + DynClone + std::fmt::Debug {
 }
 
 impl PartialEq<dyn StoredProps> for dyn StoredProps {
-    fn eq(&self, other: &dyn StoredProps) -> bool {
+    fn eq(&self, _other: &dyn StoredProps) -> bool {
         warn!("todo, props are always equal right now");
         true
     }
@@ -226,18 +226,6 @@ where
     }
 }
 
-// impl fmt::Debug for dyn ComponentUpdateContext {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         f.debug_struct("ComponentUpdateContext").finish()
-//     }
-// }
-
-#[derive(Debug, Clone)]
-enum HookState {
-    State(Box<dyn StoredState>),
-    // Effect(Vec<Box<dyn Dep>>),
-}
-
 pub trait Dep {
     fn as_any(&self) -> &dyn Any;
     fn compare(&self, other: &dyn Dep) -> bool;
@@ -282,7 +270,7 @@ where
 dyn_clone::clone_trait_object!(<T> AnyComponent<T>);
 
 impl<T> PartialEq<dyn AnyComponent<T>> for dyn AnyComponent<T> {
-    fn eq(&self, other: &dyn AnyComponent<T>) -> bool {
+    fn eq(&self, _other: &dyn AnyComponent<T>) -> bool {
         warn!("todo, components are always equal right now");
         true
     }
@@ -346,14 +334,5 @@ where
     ) -> Result<Element<T>> {
         let props = props.any().downcast_ref::<P>().ok_or(Error::InvalidProps)?;
         C::render(self, context, props, children)
-    }
-}
-
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct ComponentId(u32);
-
-impl From<u32> for ComponentId {
-    fn from(id: u32) -> Self {
-        Self(id)
     }
 }
