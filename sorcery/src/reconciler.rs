@@ -287,6 +287,10 @@ where
         // debug!("rendering a {:?}\n\n", element);
         let children = element.children();
         let fiber = match element {
+            Element::List(elements) => {
+                let fiber = Fiber::list(events_tx, elements.to_owned());
+                Ok(fiber)
+            }
             Element::Text(txt) => {
                 let fiber = Fiber::text(events_tx, txt.to_owned());
                 Ok(fiber)
@@ -373,6 +377,13 @@ where
                                     _ => {
                                         warn!("todo");
                                     }
+                                },
+
+                                Some(FiberBody::List(ref mut children)) => match next {
+                                    Element::List(new_children) => {
+                                        *children = new_children;
+                                    }
+                                    _ => warn!("TODO"),
                                 },
 
                                 Some(FiberBody::Native { ref mut props, .. }) => match next {
@@ -723,6 +734,7 @@ where
                 // text nodes can be reused
                 true
             }
+            (Element::List(_), Some(FiberBody::List(_))) => true,
             _ => false,
         }
     }
@@ -1008,6 +1020,10 @@ where
         Self::new(events_tx, FiberBody::Text(text, None))
     }
 
+    fn list(events_tx: mpsc::UnboundedSender<Event<P, R>>, elements: Vec<Element<P>>) -> Self {
+        Self::new(events_tx, FiberBody::List(elements))
+    }
+
     fn component(
         events_tx: mpsc::UnboundedSender<Event<P, R>>,
         instance: Box<dyn AnyComponent<P>>,
@@ -1041,6 +1057,7 @@ where
     fn children(&self) -> Option<&[Element<P>]> {
         match &self.body {
             Some(FiberBody::Root(children)) => Some(&children),
+            Some(FiberBody::List(children)) => Some(&children),
             Some(FiberBody::Component { children, .. }) => Some(&children),
             Some(FiberBody::Native { children, .. }) => Some(&children),
             _ => None,
@@ -1074,6 +1091,7 @@ where
     fn render(&self) -> crate::Result<Vec<Element<P>>> {
         let children = match &self.body {
             Some(FiberBody::Root(children)) => Ok(children.to_owned()),
+            Some(FiberBody::List(children)) => Ok(children.to_owned()),
             Some(FiberBody::Text(_, _)) => Ok(vec![]),
             Some(FiberBody::Component {
                 instance,
@@ -1186,6 +1204,7 @@ where
     R: Renderer<P>,
 {
     Root(Vec<Element<P>>),
+    List(Vec<Element<P>>),
     Text(String, Option<R::TextInstanceKey>),
     Component {
         instance: Box<dyn AnyComponent<P>>,
@@ -1209,6 +1228,7 @@ where
     fn can_update_with(&self, other: &Self) -> bool {
         match (&self, other) {
             (FiberBody::Root(_), FiberBody::Root(_)) => true,
+            (FiberBody::List(_), FiberBody::List(_)) => true,
             (FiberBody::Text(_, _), FiberBody::Text(_, _)) => true,
             (
                 FiberBody::Component { instance, .. },
@@ -1292,6 +1312,10 @@ where
         match (self, other) {
             (FiberBody::Root(_), FiberBody::Root(_)) => {
                 // roots are always equal
+                true
+            }
+            (FiberBody::List(_), FiberBody::List(_)) => {
+                // lists are always equal
                 true
             }
             (FiberBody::Text(t, _), FiberBody::Text(t2, _)) => t == t2,
@@ -1540,6 +1564,9 @@ where
                     debug!("update {:?} to match {:?}", fiber, with);
                     match (fiber.body.as_ref().unwrap(), with.body.as_ref().unwrap()) {
                         (FiberBody::Root(_), FiberBody::Root(_)) => {
+                            // skip
+                        }
+                        (FiberBody::List(_), FiberBody::List(_)) => {
                             // skip
                         }
                         (FiberBody::Component { .. }, FiberBody::Component { .. }) => {}

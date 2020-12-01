@@ -152,6 +152,7 @@ where
     Component(ComponentElement<T>),
     Native(NativeElement<T>),
     Text(String),
+    List(Vec<Element<T>>),
 }
 
 pub trait Props {
@@ -213,6 +214,13 @@ where
         })
     }
 
+    pub fn list<I>(elements: I) -> Self
+    where
+        I: Into<Vec<Element<T>>>,
+    {
+        Element::List(elements.into())
+    }
+
     pub fn text(text: impl Into<String>) -> Self {
         Element::Text(text.into())
     }
@@ -222,6 +230,7 @@ where
             Element::Text(_) => &[],
             Element::Component(comp_element) => &comp_element.children,
             Element::Native(native) => &native.children,
+            Element::List(children) => children,
         }
     }
 }

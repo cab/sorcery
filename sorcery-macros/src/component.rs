@@ -158,7 +158,6 @@ impl Config {
     fn generate(&mut self) -> Result<proc_macro2::TokenStream, Error> {
         use heck::CamelCase;
         // let name = format_ident!("{}", self.name.to_string().to_camel_case());
-
         let name = format_ident!("{}", self.name);
         let fn_name = format_ident!("{}", self.name);
         let fn_name_with_key = format_ident!("{}_with_key", fn_name);
@@ -176,11 +175,12 @@ impl Config {
                     Self {}
                   }
 
+                  // TODO match arg names
                   fn render(
                       &self,
                       context: &mut sorcery::RenderContext,
                       props: &Self::Props,
-                      _: &[sorcery::Element<#element_type>],
+                      children: &[sorcery::Element<#element_type>],
                   ) -> ::sorcery::Result<sorcery::Element<#element_type>> {
                       (#render).map(|i| i.into())
                   }

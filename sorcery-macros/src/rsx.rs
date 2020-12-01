@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use quote::{quote, format_ident};
 use std::collections::HashMap;
-use syn::{Expr, Path, Field, Ident, Result, Token, braced, parse::{Parse, ParseStream}, parse_macro_input, punctuated::Punctuated, parse_quote, token};
+use syn::{Expr, Path, Field, bracketed, Ident, Result, Token, braced, parse::{Parse, ParseStream}, parse_macro_input, punctuated::Punctuated, parse_quote, token};
 
 fn expand_props(builder: Expr, props: &HashMap<Ident, Expr>) -> proc_macro2::TokenStream {
     let pairs = props
@@ -84,6 +84,14 @@ pub fn rsx_impl(tokens: TokenStream) -> TokenStream {
                 sorcery::Element::<#primitive>::text(#inner)
             }
             }    },
+        {
+            move |nodes| {
+                let inner = &nodes.0;
+                quote!{ 
+                    sorcery::Element::list(#inner)
+                }
+            }
+        }
     ));
     result.into()
 }
@@ -101,16 +109,19 @@ struct Element {
 struct Walker<'a, O> {
     e: Box<dyn Fn(&'a Element, Vec<O>) -> O>,
     t: Box<dyn Fn(&'a Text) -> O>,
+    n: Box<dyn Fn(&'a Nodes) -> O>,
 }
 
 impl<'a, O> Walker<'a, O> {
     fn new(
         e: impl Fn(&'a Element, Vec<O>) -> O + 'static,
         t: impl Fn(&'a Text) -> O + 'static,
+        n: impl Fn(&'a Nodes) -> O + 'static,
     ) -> Self {
         Self {
             e: Box::new(e),
             t: Box::new(t),
+            n: Box::new(n)
         }
     }
 }
@@ -123,6 +134,7 @@ impl Element {
             .map(|n| match n {
                 Node::Text(text) => (walker.t)(text),
                 Node::Element(element) => element.walk(&walker),
+                Node::Nodes(nodes) => (walker.n)(nodes),
             })
             .collect::<Vec<_>>();
         (walker.e)(self, subresult)
@@ -133,6 +145,20 @@ impl Element {
 enum Node {
     Text(Text),
     Element(Box<Element>),
+    Nodes(Nodes)
+}
+
+#[derive(Debug)]
+struct Nodes(Expr);
+
+impl Parse for Nodes {
+    fn parse(input: ParseStream) -> Result<Self> {
+            let content;
+            bracketed!(content in input);
+            let expr = content.parse::<syn::Expr>()?;
+            Ok(Nodes(expr))
+
+    }
 }
 
 #[derive(Debug)]
@@ -223,9 +249,11 @@ impl Parse for Element {
                 loop {
                     if let Some(text) = input.parse::<Text>().ok() {
                         nodes.push(Node::Text(text));
+                    } else if let Some(n) = input.parse::<Nodes>().ok() {
+                        nodes.push(Node::Nodes(n))
                     } else if let Some(element) = input.parse::<Element>().ok() {
                         nodes.push(Node::Element(Box::new(element)))
-                    } else {
+                    }else {
                         break;
                     }
                 }

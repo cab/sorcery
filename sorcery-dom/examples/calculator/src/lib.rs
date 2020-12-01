@@ -32,7 +32,9 @@ fn App(context: &mut RenderContext, props: &(), children: &[Element]) -> sorcery
             set_counter(counter + 1);
         }}}>{&greeting}</span> " (" {counter} ") "
             <span key="blue">
-                <Blue {g} />
+                <Blue {g}>
+                    "lol" {greeting} "ok"
+                </Blue>
             </span>
             "!"
         </div>
@@ -51,6 +53,6 @@ fn Blue(
         <span style="color: blue; user-select: none; cursor: pointer;"><span on_click={{  let counter = *counter; move |_: &ClickEvent| {
             debug!("UPDATE COUNTER TO {:?}", counter + 1);
             set_counter(counter + 1);
-        }}}>{props}</span> " (" {counter} ")"</span>
+        }}}>{props}</span> " (" {counter} ")" [children]</span>
     })
 }
