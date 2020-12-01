@@ -155,6 +155,33 @@ where
     List(Vec<Element<T>>),
 }
 
+impl<T> From<String> for Element<T>
+where
+    T: RenderPrimitive,
+{
+    fn from(text: String) -> Self {
+        Self::text(text)
+    }
+}
+
+impl<T> From<Vec<Element<T>>> for Element<T>
+where
+    T: RenderPrimitive,
+{
+    fn from(text: Vec<Element<T>>) -> Self {
+        Self::list(text)
+    }
+}
+
+impl<T> From<&[Element<T>]> for Element<T>
+where
+    T: RenderPrimitive,
+{
+    fn from(elements: &[Element<T>]) -> Self {
+        Self::list(elements)
+    }
+}
+
 pub trait Props {
     type Builder;
     fn builder() -> Self::Builder;

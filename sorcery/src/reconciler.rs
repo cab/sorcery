@@ -201,7 +201,7 @@ where
             match (left_fiber, right_fiber) {
                 (Some(left_fiber), Some(right_fiber)) => {
                     // debug!("comparing {:?} vs {:?}", left_fiber.body, right_fiber.body);
-                    if left_fiber != right_fiber {
+                    let replaced = if left_fiber != right_fiber {
                         if left_fiber.can_update_with(right_fiber) {
                             (walker.update)(
                                 left_fiber,
@@ -209,44 +209,86 @@ where
                                 left_fiber_index.unwrap(),
                                 right,
                             )?;
+                            false
                         } else {
-                            debug!("CANANOT UPDAATE THIS");
+                            debug!("replacing {:?} with {:?}", left_fiber, right_fiber);
+                            (walker.replace)(left_fiber, right_fiber, left, right)?;
+                            true
                         }
                     } else {
                         debug!("no need to update {:?}", left_fiber.body);
-                    }
-
-                    let left_children = left.child_fiber_ids(left_fiber);
+                        false
+                    };
                     let right_children = right.child_fibers(right_fiber);
-                    // debug!("{:?} -> {:?}", left_children, right_children);
-                    match (left_children, right_children) {
-                        (left_children, right_children)
-                            if left_children.len() == right_children.len() =>
-                        {
-                            let len = left_children.len();
-                            // debug!("updating all children ({:?})", len);
-                            for index in 0..len {
-                                walk_fiber(
-                                    left,
-                                    Some(&left_children[index]),
-                                    left.fiber(left_children[index]),
-                                    right,
-                                    Some(right_children[index]),
-                                    walker,
-                                )?;
+                    if replaced {
+                        for child in right_children {
+                            walk_fiber(left, None, None, right, Some(child), walker)?;
+                        }
+                    } else {
+                        let left_children = left.child_fiber_ids(left_fiber);
+                        // debug!("{:?} -> {:?}", left_children, right_children);
+                        match (left_children, right_children) {
+                            (left_children, right_children)
+                                if left_children.len() == right_children.len() =>
+                            {
+                                let len = left_children.len();
+                                // debug!("updating all children ({:?})", len);
+                                for index in 0..len {
+                                    walk_fiber(
+                                        left,
+                                        Some(&left_children[index]),
+                                        left.fiber(left_children[index]),
+                                        right,
+                                        Some(right_children[index]),
+                                        walker,
+                                    )?;
+                                }
                             }
-                        }
-                        (left_children, right_children) if left_children.len() == 0 => {
-                            // debug!("appending new children");
-                            for child in right_children {
-                                walk_fiber(left, None, None, right, Some(child), walker)?;
+                            (left_children, right_children) if left_children.len() == 0 => {
+                                // debug!("appending new children");
+                                for child in right_children {
+                                    walk_fiber(left, None, None, right, Some(child), walker)?;
+                                }
                             }
-                        }
-                        (_left_children, right_children) if right_children.len() == 0 => {
-                            unimplemented!("all rm children");
-                        }
-                        (_left_children, _right_children) => {
-                            unimplemented!("uneven children");
+                            (_left_children, right_children) if right_children.len() == 0 => {
+                                unimplemented!("all rm children");
+                            }
+                            (left_children, right_children)
+                                if right_children.len() > left_children.len() =>
+                            {
+                                // TODO(cab) compare keys
+
+                                let left_len = left_children.len();
+                                for index in 0..left_len {
+                                    walk_fiber(
+                                        left,
+                                        Some(&left_children[index]),
+                                        left.fiber(left_children[index]),
+                                        right,
+                                        Some(right_children[index]),
+                                        walker,
+                                    )?;
+                                }
+
+                                for index in left_len..right_children.len() {
+                                    walk_fiber(
+                                        left,
+                                        None,
+                                        None,
+                                        right,
+                                        Some(right_children[index]),
+                                        walker,
+                                    )?;
+                                }
+                            }
+                            (left_children, right_children)
+                                if right_children.len() < left_children.len() =>
+                            {
+                                unimplemented!("uneven children (fewer)");
+                            }
+                            (_, _) => {
+                                unreachable!()
+                            }
                         }
                     };
                 }

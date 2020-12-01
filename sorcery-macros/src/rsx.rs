@@ -88,7 +88,7 @@ pub fn rsx_impl(tokens: TokenStream) -> TokenStream {
             move |nodes| {
                 let inner = &nodes.0;
                 quote!{ 
-                    sorcery::Element::list(#inner)
+                    (#inner).into()
                 }
             }
         }
